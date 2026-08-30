@@ -93,6 +93,18 @@ requires explicit merge authority and `--yes`.
 
 Do not push directly to the protected/default branch.
 
+## Continuous caretaker
+
+Use `codexflow caretaker scan` for deterministic repository-health discovery.
+The caretaker may queue low/medium-risk maintenance candidates, but it must not
+treat filename similarity or line count as proof that code should be deleted.
+
+One caretaker change per PR is the default. High-risk findings are surfaced for
+human or specialist handling rather than autonomous repair.
+
+Scheduled caretaker automation stops at a draft PR unless project policy later
+grants a stronger merge path.
+
 ## Context discipline
 
 Do not transfer full worker transcripts between agents. Pass only the context
