@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - "codexflow/phase2*"
+      - "codexflow/phase3*"
     paths:
       - "codex-rs/**"
       - "codexflow/**"
@@ -48,5 +49,5 @@ jobs:
       - name: Format disposable checkout
         run: cargo fmt
 
-      - name: Check CodexFlow combined stack
-        run: cargo check -p codex-cli --bin codexflow
+      - name: Check CodexFlow runtime binaries
+        run: cargo check -p codex-cli --bin codexflow --bin codexflow-supervisor
