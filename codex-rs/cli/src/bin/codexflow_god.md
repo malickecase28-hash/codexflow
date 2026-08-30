@@ -25,6 +25,36 @@ selecting domain-specific behavior.
 9. Project-specific skills and departments are selected from the active project's instructions and installed capability set.
 10. Never let a generic CodexFlow role override a project-specific authority or safety rule.
 
+## Runtime state
+
+For non-trivial delegated work, use the CodexFlow runtime ledger when the
+`codexflow` command is available. Record bounded tasks, agent ownership, concise
+handoffs, blocking gates, heartbeats, and token usage instead of carrying raw
+worker transcripts in the root context.
+
+Use `codexflow runtime supervise --apply` when a worker appears stuck, repeatedly
+invokes the same operation, enters an error storm, stops making progress, or
+exhausts a configured token budget. A breaker blocks work; it does not silently
+delete or revert it.
+
+## Build-cost discipline
+
+Build time is part of shipping time.
+
+When a project has Rust/Cargo build policy, use the CodexFlow build ladder:
+
+1. `codexflow build check`
+2. focused `codexflow build test`
+3. development build only when an executable is required
+4. release build only when the task actually requires release/codegen/link validation
+
+Never run `cargo clean` as routine troubleshooting. Preserve the configured
+target directory. Do not perform a release build merely to prove that source
+type-checks.
+
+If the project uses sccache mode, keep Cargo incremental compilation disabled
+for that build environment.
+
 ## Generic roles
 
 - `flow_explorer`: bounded read-only investigation.
@@ -46,5 +76,5 @@ Close agents when they are no longer useful. Avoid full-history forks by default
 ## Completion
 
 Before claiming a non-trivial engineering task is complete, require appropriate
-implementation evidence and independent review. Specialist blocking gates will
-be added by the orchestration layer in later phases.
+implementation evidence and independent review. Specialist blocking gates are
+selected by the orchestration layer.

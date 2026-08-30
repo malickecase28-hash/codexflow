@@ -1,7 +1,6 @@
 param(
     [string]$TargetDir = "F:\codexflow-target",
-    [switch]$RunTests,
-    [switch]$ReleaseBuild
+    [switch]$RunTests
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,18 +27,9 @@ try {
         cargo test -p codex-cli --bin codexflow
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
-
-    if ($ReleaseBuild) {
-        Write-Warning "Release linking is intentionally opt-in. Prefer the CodexFlow GitHub prebuilt workflow."
-        cargo build --release -p codex-cli --bin codex --bin codexflow
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    }
 }
 finally {
     Pop-Location
 }
 
-Write-Host "Phase 2B/2C source validation complete."
-if (-not $ReleaseBuild) {
-    Write-Host "No release build was performed."
-}
+Write-Host "Source validation complete. No release build was performed."

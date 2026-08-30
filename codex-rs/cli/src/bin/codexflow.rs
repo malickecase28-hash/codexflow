@@ -1,3 +1,8 @@
+#[path = "codexflow/build_manager.rs"]
+mod build_manager;
+#[path = "codexflow/runtime.rs"]
+mod runtime_state;
+
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
@@ -15,6 +20,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::canonicalize_existing_preserving_symlinks;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -22,9 +28,57 @@ use std::process::Command;
 const GOD_INSTRUCTIONS: &str = include_str!("codexflow_god.md");
 const MANAGED_KEY: &str = "codexflow.managed";
 const SCHEMA_KEY: &str = "codexflow.schema";
-const SCHEMA_VERSION: &str = "1";
+const SCHEMA_VERSION: &str = "2";
 const PROJECT_ID_ENV: &str = "CODEXFLOW_PROJECT_ID";
 const PROJECT_NAME_ENV: &str = "CODEXFLOW_PROJECT_NAME";
+
+const FLOW_ROLES: &[(&str, &str)] = &[
+    (
+        "flow_explorer.toml",
+        r#"name = "flow_explorer"
+description = "Read-only investigation agent for a bounded question about the active project."
+developer_instructions = """
+Investigate only the delegated question. Do not edit files. Read the minimum useful context, identify authoritative paths and evidence, and return concise findings with file references, risks, and unresolved questions. Do not propose broad rewrites unless the evidence requires one.
+"""
+"#,
+    ),
+    (
+        "flow_worker.toml",
+        r#"name = "flow_worker"
+description = "Implementation agent for a bounded code change with explicit ownership."
+developer_instructions = """
+Execute only the delegated objective inside the assigned project roots and write scope. Assume other agents may be editing elsewhere. Do not revert unrelated changes. Implement the smallest correct change and run focused checks. Do not approve your own review or specialist gates. Return changed paths, checks, unresolved risks, and concise handoff facts.
+"""
+"#,
+    ),
+    (
+        "flow_verifier.toml",
+        r#"name = "flow_verifier"
+description = "Verification agent for tests, reproduction, static checks, and evidence collection."
+developer_instructions = """
+Verify the stated acceptance criteria independently. Prefer running checks and inspecting evidence over rewriting implementation. Do not make production edits unless the root explicitly delegates a verification-only fixture or test correction. Return exact commands, results, failures, and confidence limits.
+"""
+"#,
+    ),
+    (
+        "flow_reviewer.toml",
+        r#"name = "flow_reviewer"
+description = "Independent reviewer for completed changes with no implementation ownership."
+developer_instructions = """
+Review the supplied diff and acceptance criteria independently. Do not inherit or defend the implementer's reasoning. Look for correctness, security, concurrency, data-loss, compatibility, performance, test, and maintainability defects relevant to the active project. Rank findings by severity and cite exact paths. Do not edit implementation code unless explicitly reassigned after review.
+"""
+"#,
+    ),
+    (
+        "flow_integrator.toml",
+        r#"name = "flow_integrator"
+description = "Integration agent for reconciling completed disjoint changes and validating the combined result."
+developer_instructions = """
+Integrate only completed, reviewed work owned by disjoint workers. Resolve mechanical conflicts without silently changing domain semantics. Run integration checks after combining changes. Escalate semantic conflicts to the root rather than choosing an authority by convenience.
+"""
+"#,
+    ),
+];
 
 #[derive(Debug, Parser)]
 #[command(
@@ -45,6 +99,12 @@ enum TopCommand {
     Run(RunArgs),
     /// Diagnose project resolution and local Codex state.
     Doctor(DoctorArgs),
+    /// Install the CodexFlow profile and generic execution roles.
+    Setup(SetupArgs),
+    /// Durable task, agent, gate, handoff, budget, and circuit-breaker state.
+    Runtime(runtime_state::RuntimeArgs),
+    /// Cost-aware Rust build management for the active project.
+    Build(build_manager::BuildArgs),
 }
 
 #[derive(Debug, Args)]
@@ -107,24 +167,44 @@ struct DoctorArgs {
     json: bool,
 }
 
+#[derive(Debug, Args)]
+struct SetupArgs {
+    /// Replace existing generic CodexFlow role files and profile.
+    #[arg(long)]
+    force: bool,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let runtime = open_state_runtime().await?;
-
     match cli.command {
-        Some(TopCommand::Project(args)) => handle_project(&runtime, args).await,
-        Some(TopCommand::Run(args)) => run_project(&runtime, args).await,
-        Some(TopCommand::Doctor(args)) => doctor(&runtime, args).await,
-        None => {
-            run_project(
-                &runtime,
-                RunArgs {
-                    project: None,
-                    codex_args: Vec::new(),
-                },
-            )
-            .await
+        Some(TopCommand::Setup(args)) => setup(args),
+        command => {
+            let runtime = open_state_runtime().await?;
+            match command {
+                Some(TopCommand::Project(args)) => handle_project(&runtime, args).await,
+                Some(TopCommand::Run(args)) => run_project(&runtime, args).await,
+                Some(TopCommand::Doctor(args)) => doctor(&runtime, args).await,
+                Some(TopCommand::Runtime(args)) => {
+                    let project = resolve_scoped_project(&runtime, args.project.as_deref()).await?;
+                    runtime_state::handle(&primary_root(&project)?, args)
+                }
+                Some(TopCommand::Build(args)) => {
+                    let project = resolve_scoped_project(&runtime, args.project.as_deref()).await?;
+                    build_manager::handle(&primary_root(&project)?, args)
+                }
+                Some(TopCommand::Setup(_)) => unreachable!(),
+                None => {
+                    run_project(
+                        &runtime,
+                        RunArgs {
+                            project: None,
+                            codex_args: Vec::new(),
+                        },
+                    )
+                    .await
+                }
+            }
         }
     }
 }
@@ -145,6 +225,35 @@ async fn open_state_runtime() -> Result<std::sync::Arc<StateRuntime>> {
     )
     .await
     .context("initialize Codex SQLite state")
+}
+
+fn setup(args: SetupArgs) -> Result<()> {
+    let codex_home = find_codex_home().context("resolve CODEX_HOME")?;
+    let agents_dir = codex_home.join("agents");
+    fs::create_dir_all(&agents_dir)
+        .with_context(|| format!("create {}", agents_dir.display()))?;
+
+    for (name, content) in FLOW_ROLES {
+        let path = agents_dir.join(name);
+        if path.exists() && !args.force {
+            continue;
+        }
+        fs::write(&path, content).with_context(|| format!("write {}", path.display()))?;
+    }
+
+    let profile = codex_home.join("codexflow.config.toml");
+    if !profile.exists() || args.force {
+        let profile_text = format!(
+            "developer_instructions = {god:?}\n\n[features]\nmulti_agent = true\n\n[agents]\nmax_threads = 8\nmax_depth = 2\n",
+            god = GOD_INSTRUCTIONS
+        );
+        fs::write(&profile, profile_text)
+            .with_context(|| format!("write {}", profile.display()))?;
+    }
+
+    println!("CodexFlow profile: {}", profile.display());
+    println!("Generic roles: {}", agents_dir.display());
+    Ok(())
 }
 
 async fn handle_project(runtime: &StateRuntime, args: ProjectArgs) -> Result<()> {
@@ -274,20 +383,13 @@ async fn handle_project(runtime: &StateRuntime, args: ProjectArgs) -> Result<()>
 }
 
 async fn run_project(runtime: &StateRuntime, args: RunArgs) -> Result<()> {
-    let project = match args.project {
-        Some(target) => find_project(runtime, &target).await?,
-        None => current_project(runtime).await?,
-    };
-    let primary_root = project
-        .roots
-        .first()
-        .context("managed project has no roots")?
-        .path
-        .clone();
+    let project = resolve_scoped_project(runtime, args.project.as_deref()).await?;
+    let primary_root = primary_root(&project)?;
 
     let codex = sibling_codex_executable()?;
     let encoded_god = serde_json::to_string(GOD_INSTRUCTIONS)?;
-    let status = Command::new(&codex)
+    let mut command = Command::new(&codex);
+    command
         .arg("--profile")
         .arg("codexflow")
         .arg("--enable")
@@ -298,7 +400,11 @@ async fn run_project(runtime: &StateRuntime, args: RunArgs) -> Result<()> {
         .arg(format!("developer_instructions={encoded_god}"))
         .args(args.codex_args)
         .env(PROJECT_ID_ENV, &project.id)
-        .env(PROJECT_NAME_ENV, &project.name)
+        .env(PROJECT_NAME_ENV, &project.name);
+
+    build_manager::apply_project_build_environment(&primary_root, &mut command)?;
+
+    let status = command
         .status()
         .with_context(|| format!("launch {}", codex.display()))?;
 
@@ -317,6 +423,9 @@ async fn doctor(runtime: &StateRuntime, args: DoctorArgs) -> Result<()> {
         "project": current,
         "codex": codex,
         "project_env": std::env::var(PROJECT_ID_ENV).ok(),
+        "sccache": which::which("sccache").ok(),
+        "cargo": which::which("cargo").ok(),
+        "rustc": which::which("rustc").ok(),
     });
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -330,8 +439,37 @@ async fn doctor(runtime: &StateRuntime, args: DoctorArgs) -> Result<()> {
             Some(path) => println!("codex: {}", path.display()),
             None => println!("codex: not found"),
         }
+        println!(
+            "cargo: {}",
+            which::which("cargo")
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|_| "not found".to_string())
+        );
+        println!(
+            "sccache: {}",
+            which::which("sccache")
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|_| "not found".to_string())
+        );
     }
     Ok(())
+}
+
+async fn resolve_scoped_project(runtime: &StateRuntime, target: Option<&str>) -> Result<Project> {
+    match target {
+        Some(target) => find_project(runtime, target).await,
+        None => current_project(runtime).await,
+    }
+}
+
+fn primary_root(project: &Project) -> Result<PathBuf> {
+    Ok(PathBuf::from(
+        &project
+            .roots
+            .first()
+            .context("managed project has no roots")?
+            .path,
+    ))
 }
 
 async fn all_projects(runtime: &StateRuntime) -> Result<Vec<Project>> {
