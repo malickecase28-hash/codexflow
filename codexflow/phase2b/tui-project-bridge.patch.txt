@@ -1,0 +1,12 @@
+In codex-rs/tui/src/app_server_session.rs, inside
+start_thread_with_session_start_source, immediately after
+thread_start_params_from_config returns:
+
+if params.project_id.is_none()
+    && let Ok(project_id) = std::env::var("CODEXFLOW_PROJECT_ID")
+{
+    let project_id = project_id.trim();
+    if !project_id.is_empty() {
+        params.project_id = Some(project_id.to_string());
+    }
+}
