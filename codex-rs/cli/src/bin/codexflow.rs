@@ -27,7 +27,11 @@ const PROJECT_ID_ENV: &str = "CODEXFLOW_PROJECT_ID";
 const PROJECT_NAME_ENV: &str = "CODEXFLOW_PROJECT_NAME";
 
 #[derive(Debug, Parser)]
-#[command(name = "codexflow", version, about = "Project-aware Codex orchestration harness")]
+#[command(
+    name = "codexflow",
+    version,
+    about = "Project-aware Codex orchestration harness"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<TopCommand>,
@@ -74,20 +78,11 @@ enum ProjectCommand {
         json: bool,
     },
     /// Rename a managed project.
-    Rename {
-        target: String,
-        name: String,
-    },
+    Rename { target: String, name: String },
     /// Add one root to a managed project.
-    RootAdd {
-        target: String,
-        path: PathBuf,
-    },
+    RootAdd { target: String, path: PathBuf },
     /// Remove one root from a managed project.
-    RootRemove {
-        target: String,
-        path: PathBuf,
-    },
+    RootRemove { target: String, path: PathBuf },
     /// Remove a project record. This never deletes project files.
     Delete {
         target: String,
@@ -434,7 +429,7 @@ async fn ensure_roots_not_registered(runtime: &StateRuntime, roots: &[String]) -
 }
 
 fn canonical_roots(paths: Vec<PathBuf>) -> Result<Vec<String>> {
-    let mut roots = Vec::new();
+    let mut roots: Vec<String> = Vec::new();
     for path in paths {
         let root = canonical_root(&path)?;
         if !roots.iter().any(|existing| roots_equal(existing, &root)) {

@@ -758,6 +758,14 @@ impl AppServerSession {
             remote_cwd_override.or(self.remote_cwd_override.as_deref()),
             session_start_source,
         );
+        if params.project_id.is_none()
+            && let Ok(project_id) = std::env::var("CODEXFLOW_PROJECT_ID")
+        {
+            let project_id = project_id.trim();
+            if !project_id.is_empty() {
+                params.project_id = Some(project_id.to_string());
+            }
+        }
         if self.history_support == ThreadHistorySupport::LegacyOnly {
             params.history_mode = None;
         }

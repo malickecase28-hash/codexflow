@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $PhaseRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$Repo = Resolve-Path (Join-Path $PhaseRoot "..\..\..")
+$Repo = Resolve-Path (Join-Path $PhaseRoot "..\..")
 $CodexRs = Join-Path $Repo "codex-rs"
 $TuiFile = Join-Path $CodexRs "tui\src\app_server_session.rs"
 
