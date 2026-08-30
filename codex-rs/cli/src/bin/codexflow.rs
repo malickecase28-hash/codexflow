@@ -2,6 +2,8 @@
 mod build_manager;
 #[path = "codexflow/runtime.rs"]
 mod runtime_state;
+#[path = "codexflow/orchestrator.rs"]
+mod orchestrator;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -105,6 +107,8 @@ enum TopCommand {
     Runtime(runtime_state::RuntimeArgs),
     /// Cost-aware Rust build management for the active project.
     Build(build_manager::BuildArgs),
+    /// Deterministic project capability routing and execution planning.
+    Orchestrate(orchestrator::OrchestrateArgs),
 }
 
 #[derive(Debug, Args)]
@@ -115,35 +119,27 @@ struct ProjectArgs {
 
 #[derive(Debug, Subcommand)]
 enum ProjectCommand {
-    /// Register a project. Repeat --root for a multi-root project.
     Add {
         name: String,
         #[arg(long = "root")]
         roots: Vec<PathBuf>,
     },
-    /// List managed projects.
     List {
         #[arg(long)]
         json: bool,
     },
-    /// Resolve the managed project containing the current directory.
     Current {
         #[arg(long)]
         json: bool,
     },
-    /// Show one project by id or unique name.
     Show {
         target: String,
         #[arg(long)]
         json: bool,
     },
-    /// Rename a managed project.
     Rename { target: String, name: String },
-    /// Add one root to a managed project.
     RootAdd { target: String, path: PathBuf },
-    /// Remove one root from a managed project.
     RootRemove { target: String, path: PathBuf },
-    /// Remove a project record. This never deletes project files.
     Delete {
         target: String,
         #[arg(long)]
@@ -153,23 +149,19 @@ enum ProjectCommand {
 
 #[derive(Debug, Args)]
 struct RunArgs {
-    /// Project id or unique name. Omit to resolve from the current directory.
     project: Option<String>,
-    /// Arguments forwarded to Codex after `--`.
     #[arg(last = true, allow_hyphen_values = true)]
     codex_args: Vec<OsString>,
 }
 
 #[derive(Debug, Args)]
 struct DoctorArgs {
-    /// Print machine-readable output.
     #[arg(long)]
     json: bool,
 }
 
 #[derive(Debug, Args)]
 struct SetupArgs {
-    /// Replace existing generic CodexFlow role files and profile.
     #[arg(long)]
     force: bool,
 }
@@ -192,6 +184,10 @@ async fn main() -> Result<()> {
                 Some(TopCommand::Build(args)) => {
                     let project = resolve_scoped_project(&runtime, args.project.as_deref()).await?;
                     build_manager::handle(&primary_root(&project)?, args)
+                }
+                Some(TopCommand::Orchestrate(args)) => {
+                    let project = resolve_scoped_project(&runtime, args.project.as_deref()).await?;
+                    orchestrator::handle(&primary_root(&project)?, args)
                 }
                 Some(TopCommand::Setup(_)) => unreachable!(),
                 None => {

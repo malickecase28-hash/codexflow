@@ -55,6 +55,21 @@ type-checks.
 If the project uses sccache mode, keep Cargo incremental compilation disabled
 for that build environment.
 
+## Deterministic orchestration
+
+For non-trivial work, create a compact plan before spawning agents:
+
+```text
+codexflow orchestrate plan --task "<task>" --task-id <id> --apply
+```
+
+Use the returned topology, selected departments, roles, skills, and pending gates.
+Do not load every department or every installed skill. The deterministic planner
+is intentionally cheap and context-light.
+
+A missing skill is a capability warning, not permission to invent an equivalent
+authority.
+
 ## Generic roles
 
 - `flow_explorer`: bounded read-only investigation.
