@@ -32,11 +32,12 @@ jobs:
         with:
           target: x86_64-pc-windows-msvc
 
-      - name: Build CodexFlow binaries once
+      - name: Build CodexFlow binaries and Code Mode host
         shell: pwsh
         run: |
           $env:LIBSQLITE3_FLAGS = "SQLITE_DISABLE_INTRINSIC"
           cargo build --locked --target x86_64-pc-windows-msvc --release --timings -p codex-cli --bin codex --bin codexflow
+          cargo build --locked --target x86_64-pc-windows-msvc --release --timings -p codex-code-mode-host --bin codex-code-mode-host
 
       - name: Stage archive
         shell: pwsh
@@ -46,6 +47,16 @@ jobs:
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item (Join-Path $release "codex.exe") $stage
           Copy-Item (Join-Path $release "codexflow.exe") $stage
+          Copy-Item (Join-Path $release "codex-code-mode-host.exe") $stage
+
+          $required = @("codex.exe", "codexflow.exe", "codex-code-mode-host.exe")
+          foreach ($name in $required) {
+            $path = Join-Path $stage $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Incomplete CodexFlow runtime bundle: missing $name"
+            }
+          }
+
           $archive = Join-Path $env:RUNNER_TEMP "codexflow-windows-x86_64.zip"
           Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive -Force
           $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
