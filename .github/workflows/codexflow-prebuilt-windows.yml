@@ -32,11 +32,11 @@ jobs:
         with:
           target: x86_64-pc-windows-msvc
 
-      - name: Build CodexFlow binaries and Code Mode host
+      - name: Build CodexFlow runtime bundle
         shell: pwsh
         run: |
           $env:LIBSQLITE3_FLAGS = "SQLITE_DISABLE_INTRINSIC"
-          cargo build --locked --target x86_64-pc-windows-msvc --release --timings -p codex-cli --bin codex --bin codexflow
+          cargo build --locked --target x86_64-pc-windows-msvc --release --timings -p codex-cli --bin codex --bin codexflow --bin codexflow-supervisor
           cargo build --locked --target x86_64-pc-windows-msvc --release --timings -p codex-code-mode-host --bin codex-code-mode-host
 
       - name: Stage archive
@@ -45,17 +45,27 @@ jobs:
           $release = Join-Path $env:CARGO_TARGET_DIR "x86_64-pc-windows-msvc\release"
           $stage = Join-Path $env:RUNNER_TEMP "codexflow-windows-x86_64"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item (Join-Path $release "codex.exe") $stage
-          Copy-Item (Join-Path $release "codexflow.exe") $stage
-          Copy-Item (Join-Path $release "codex-code-mode-host.exe") $stage
 
-          $required = @("codex.exe", "codexflow.exe", "codex-code-mode-host.exe")
+          $required = @(
+            "codex.exe",
+            "codexflow.exe",
+            "codex-code-mode-host.exe",
+            "codexflow-supervisor.exe"
+          )
           foreach ($name in $required) {
-            $path = Join-Path $stage $name
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Incomplete CodexFlow runtime bundle: missing $name"
+            $source = Join-Path $release $name
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+              throw "Incomplete CodexFlow build: missing $name"
             }
+            Copy-Item $source $stage
           }
+
+          & (Join-Path $stage "codex.exe") --version
+          if ($LASTEXITCODE -ne 0) { throw "codex.exe smoke test failed" }
+          & (Join-Path $stage "codexflow.exe") --version
+          if ($LASTEXITCODE -ne 0) { throw "codexflow.exe smoke test failed" }
+          & (Join-Path $stage "codexflow-supervisor.exe") --version
+          if ($LASTEXITCODE -ne 0) { throw "codexflow-supervisor.exe smoke test failed" }
 
           $archive = Join-Path $env:RUNNER_TEMP "codexflow-windows-x86_64.zip"
           Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive -Force
