@@ -243,3 +243,41 @@ async fn wait_for_activity(
         Ok(Err(_)) | Err(_) => WaitOutcome::TimedOut,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_mailbox_activity_maps_to_mailbox_outcome() {
+        assert_eq!(
+            pending_activity_outcome(Some(InputQueueActivity::Mailbox)),
+            Some(WaitOutcome::MailboxActivity)
+        );
+    }
+
+    #[test]
+    fn pending_steer_activity_maps_to_steered_outcome() {
+        assert_eq!(
+            pending_activity_outcome(Some(InputQueueActivity::Steer)),
+            Some(WaitOutcome::Steered)
+        );
+    }
+
+    #[test]
+    fn bounded_wait_reports_timeout() {
+        let result = WaitAgentResult::from_outcome(WaitOutcome::TimedOut, None, 30_000, false);
+        assert!(result.timed_out);
+        assert_eq!(result.message, "Wait timed out.");
+    }
+
+    #[test]
+    fn event_suspended_wait_does_not_report_channel_close_as_timeout() {
+        let result = WaitAgentResult::from_outcome(WaitOutcome::TimedOut, None, 30_000, true);
+        assert!(!result.timed_out);
+        assert_eq!(
+            result.message,
+            "Event wait ended because the activity channel closed."
+        );
+    }
+}
