@@ -8,12 +8,10 @@ on:
       - "codexflow/phase3*"
     paths:
       - "codex-rs/**"
-      - "codexflow/**"
       - ".github/workflows/codexflow-source-check.yml"
   pull_request:
     paths:
       - "codex-rs/**"
-      - "codexflow/**"
       - ".github/workflows/codexflow-source-check.yml"
 
 permissions:
