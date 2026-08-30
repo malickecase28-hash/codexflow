@@ -158,7 +158,9 @@ struct WireResponse {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Run { project_root, bind } => run_supervisor(&canonical_project_root(project_root)?, &bind),
+        Command::Run { project_root, bind } => {
+            run_supervisor(&canonical_project_root(project_root)?, &bind)
+        }
         Command::Publish {
             project_root,
             kind,
@@ -167,7 +169,8 @@ fn main() -> Result<()> {
         } => {
             let root = canonical_project_root(project_root)?;
             validate_event_kind(&kind)?;
-            let payload: Value = serde_json::from_str(&payload).context("parse --payload as JSON")?;
+            let payload: Value =
+                serde_json::from_str(&payload).context("parse --payload as JSON")?;
             print_value(execute_with_optional_supervisor(
                 &root,
                 WireRequest::Publish { kind, key, payload },
@@ -240,7 +243,9 @@ fn handle_connection(project_root: &Path, mut stream: TcpStream) -> Result<()> {
     let read_stream = stream.try_clone().context("clone supervisor socket")?;
     let mut reader = BufReader::new(read_stream);
     let mut request_line = String::new();
-    let bytes = reader.read_line(&mut request_line).context("read supervisor request")?;
+    let bytes = reader
+        .read_line(&mut request_line)
+        .context("read supervisor request")?;
     if bytes == 0 {
         return Ok(());
     }
@@ -288,10 +293,18 @@ fn send_request(endpoint: &SupervisorEndpoint, request: &WireRequest) -> Result<
     stream.flush()?;
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    reader.read_line(&mut line).context("read supervisor response")?;
-    let response: WireResponse = serde_json::from_str(line.trim_end()).context("parse supervisor response")?;
+    reader
+        .read_line(&mut line)
+        .context("read supervisor response")?;
+    let response: WireResponse =
+        serde_json::from_str(line.trim_end()).context("parse supervisor response")?;
     if !response.ok {
-        bail!("{}", response.error.unwrap_or_else(|| "supervisor request failed".to_string()));
+        bail!(
+            "{}",
+            response
+                .error
+                .unwrap_or_else(|| "supervisor request failed".to_string())
+        );
     }
     Ok(response.value.unwrap_or(Value::Null))
 }
@@ -314,7 +327,12 @@ fn execute_request(project_root: &Path, request: WireRequest) -> Result<Value> {
     }
 }
 
-fn publish_event(project_root: &Path, kind: String, key: Option<String>, payload: Value) -> Result<Value> {
+fn publish_event(
+    project_root: &Path,
+    kind: String,
+    key: Option<String>,
+    payload: Value,
+) -> Result<Value> {
     with_state_lock(project_root, || {
         let seq = last_event_seq(project_root)?.saturating_add(1);
         let event = EventEnvelope {
@@ -344,30 +362,45 @@ fn register_await(
     validate_topics(&topics)?;
     with_state_lock(project_root, || {
         let mut awaits = load_awaits(project_root)?;
-        let now = now_iso();
-        let candidate = AwaitSpec {
-            schema: AWAIT_SCHEMA.to_string(),
-            id: id.clone(),
-            owner,
-            topics,
-            after_seq,
-            state: "waiting".to_string(),
-            matched_event_id: None,
-            created_at: now.clone(),
-            updated_at: now,
-        };
         if let Some(existing) = awaits.get(&id) {
-            if existing == &candidate {
+            if same_await_registration(existing, &owner, &topics, after_seq) {
                 return Ok(serde_json::to_value(existing)?);
             }
             bail!("await id already exists with different configuration: {id}");
         }
-        awaits.insert(id.clone(), candidate);
+        let now = now_iso();
+        awaits.insert(
+            id.clone(),
+            AwaitSpec {
+                schema: AWAIT_SCHEMA.to_string(),
+                id: id.clone(),
+                owner,
+                topics,
+                after_seq,
+                state: "waiting".to_string(),
+                matched_event_id: None,
+                created_at: now.clone(),
+                updated_at: now,
+            },
+        );
         save_awaits(project_root, &awaits)?;
         resolve_existing_events_for_await(project_root, &id, &mut awaits)?;
         save_awaits(project_root, &awaits)?;
-        Ok(serde_json::to_value(awaits.get(&id).context("await disappeared after registration")?)?)
+        Ok(serde_json::to_value(
+            awaits
+                .get(&id)
+                .context("await disappeared after registration")?,
+        )?)
     })
+}
+
+fn same_await_registration(
+    existing: &AwaitSpec,
+    owner: &str,
+    topics: &[String],
+    after_seq: u64,
+) -> bool {
+    existing.owner == owner && existing.topics == topics && existing.after_seq == after_seq
 }
 
 fn read_inbox(project_root: &Path, owner: &str, clear: bool) -> Result<Value> {
@@ -385,8 +418,14 @@ fn read_inbox(project_root: &Path, owner: &str, clear: bool) -> Result<Value> {
 fn supervisor_status(project_root: &Path) -> Result<Value> {
     let endpoint = read_endpoint(project_root).ok();
     let awaits = load_awaits(project_root)?;
-    let waiting = awaits.values().filter(|spec| spec.state == "waiting").count();
-    let fired = awaits.values().filter(|spec| spec.state == "fired").count();
+    let waiting = awaits
+        .values()
+        .filter(|spec| spec.state == "waiting")
+        .count();
+    let fired = awaits
+        .values()
+        .filter(|spec| spec.state == "fired")
+        .count();
     Ok(json!({
         "project_root": project_root,
         "endpoint": endpoint,
@@ -422,23 +461,32 @@ fn resolve_existing_events_for_await(
         return Ok(());
     }
     let events: Vec<EventEnvelope> = read_json_lines(&events_path(project_root))?;
-    if let Some(event) = events
-        .into_iter()
-        .find(|event| event.seq > spec.after_seq && spec.topics.iter().any(|topic| topic_matches(topic, &event.kind)))
-    {
+    if let Some(event) = events.into_iter().find(|event| {
+        event.seq > spec.after_seq
+            && spec
+                .topics
+                .iter()
+                .any(|topic| topic_matches(topic, &event.kind))
+    }) {
         fire_await(project_root, awaits, await_id, &event)?;
     }
     Ok(())
 }
 
-fn resolve_event_against_awaits(project_root: &Path, event: &EventEnvelope) -> Result<Vec<String>> {
+fn resolve_event_against_awaits(
+    project_root: &Path,
+    event: &EventEnvelope,
+) -> Result<Vec<String>> {
     let mut awaits = load_awaits(project_root)?;
     let matching_ids = awaits
         .iter()
         .filter(|(_, spec)| {
             spec.state == "waiting"
                 && event.seq > spec.after_seq
-                && spec.topics.iter().any(|topic| topic_matches(topic, &event.kind))
+                && spec
+                    .topics
+                    .iter()
+                    .any(|topic| topic_matches(topic, &event.kind))
         })
         .map(|(id, _)| id.clone())
         .collect::<Vec<_>>();
@@ -470,7 +518,19 @@ fn fire_await(
         event: event.clone(),
         delivered_at: now_iso(),
     };
-    append_json_line(&inbox_path(project_root, &spec.owner), &record)
+    append_inbox_once(project_root, &spec.owner, &record)
+}
+
+fn append_inbox_once(project_root: &Path, owner: &str, record: &InboxRecord) -> Result<()> {
+    let path = inbox_path(project_root, owner);
+    let existing: Vec<InboxRecord> = read_json_lines(&path)?;
+    if existing
+        .iter()
+        .any(|item| item.await_id == record.await_id && item.event.id == record.event.id)
+    {
+        return Ok(());
+    }
+    append_json_line(&path, record)
 }
 
 fn topic_matches(topic: &str, kind: &str) -> bool {
@@ -478,7 +538,10 @@ fn topic_matches(topic: &str, kind: &str) -> bool {
         return true;
     }
     if let Some(prefix) = topic.strip_suffix(".*") {
-        return kind == prefix || kind.strip_prefix(prefix).is_some_and(|suffix| suffix.starts_with('.'));
+        return kind == prefix
+            || kind
+                .strip_prefix(prefix)
+                .is_some_and(|suffix| suffix.starts_with('.'));
     }
     topic == kind
 }
@@ -487,7 +550,9 @@ fn validate_event_kind(kind: &str) -> Result<()> {
     if kind.is_empty()
         || kind.len() > 128
         || !kind.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'.' | b'_' | b'-')
         })
     {
         bail!("invalid event kind {kind:?}");
@@ -508,7 +573,12 @@ fn validate_id(value: &str) -> Result<()> {
 }
 
 fn validate_owner(owner: &str) -> Result<()> {
-    if owner.trim().is_empty() || owner.len() > 256 || owner.contains(['\r', '\n', '\0']) {
+    if owner.trim().is_empty()
+        || owner.len() > 256
+        || owner
+            .chars()
+            .any(|ch| matches!(ch, '\r' | '\n' | '\0'))
+    {
         bail!("invalid owner");
     }
     Ok(())
@@ -529,11 +599,15 @@ fn validate_topics(topics: &[String]) -> Result<()> {
 }
 
 fn canonical_project_root(path: PathBuf) -> Result<PathBuf> {
-    fs::canonicalize(&path).with_context(|| format!("canonicalize project root {}", path.display()))
+    fs::canonicalize(&path)
+        .with_context(|| format!("canonicalize project root {}", path.display()))
 }
 
 fn state_dir(project_root: &Path) -> PathBuf {
-    project_root.join(".codexflow").join("state").join("supervisor")
+    project_root
+        .join(".codexflow")
+        .join("state")
+        .join("supervisor")
 }
 
 fn inbox_dir(project_root: &Path) -> PathBuf {
@@ -559,7 +633,13 @@ fn inbox_path(project_root: &Path, owner: &str) -> PathBuf {
 fn owner_file_stem(owner: &str) -> String {
     let visible = owner
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') { ch } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
         .take(48)
         .collect::<String>();
     let mut hasher = DefaultHasher::new();
@@ -574,7 +654,8 @@ fn ensure_state_dirs(project_root: &Path) -> Result<()> {
 fn read_endpoint(project_root: &Path) -> Result<SupervisorEndpoint> {
     let path = endpoint_path(project_root);
     let data = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-    let endpoint: SupervisorEndpoint = serde_json::from_str(&data).context("parse supervisor endpoint")?;
+    let endpoint: SupervisorEndpoint =
+        serde_json::from_str(&data).context("parse supervisor endpoint")?;
     if endpoint.schema != ENDPOINT_SCHEMA {
         bail!("unsupported supervisor endpoint schema {}", endpoint.schema);
     }
@@ -681,7 +762,10 @@ impl StateLock {
                         continue;
                     }
                     if started.elapsed() > LOCK_WAIT_LIMIT {
-                        bail!("timed out waiting for supervisor state lock {}", path.display());
+                        bail!(
+                            "timed out waiting for supervisor state lock {}",
+                            path.display()
+                        );
                     }
                     thread::sleep(Duration::from_millis(25));
                 }
@@ -710,6 +794,20 @@ fn print_value(value: Value) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn waiting_spec() -> AwaitSpec {
+        AwaitSpec {
+            schema: AWAIT_SCHEMA.to_string(),
+            id: "worker_wait".to_string(),
+            owner: "/root".to_string(),
+            topics: vec!["agent.*".to_string()],
+            after_seq: 7,
+            state: "waiting".to_string(),
+            matched_event_id: None,
+            created_at: "old".to_string(),
+            updated_at: "old".to_string(),
+        }
+    }
+
     #[test]
     fn wildcard_topic_matches_expected_event_kinds() {
         assert!(topic_matches("agent.*", "agent.completed"));
@@ -725,5 +823,22 @@ mod tests {
         assert_eq!(first, second);
         assert!(!first.contains('/'));
         assert!(!first.contains(':'));
+    }
+
+    #[test]
+    fn await_registration_is_idempotent_without_comparing_timestamps() {
+        let spec = waiting_spec();
+        assert!(same_await_registration(
+            &spec,
+            "/root",
+            &["agent.*".to_string()],
+            7
+        ));
+        assert!(!same_await_registration(
+            &spec,
+            "/root",
+            &["build.*".to_string()],
+            7
+        ));
     }
 }
