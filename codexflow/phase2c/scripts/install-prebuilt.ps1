@@ -48,8 +48,22 @@ try {
         throw "SHA-256 mismatch: expected $expected actual $actual"
     }
 
+    $stage = Join-Path $tmp "stage"
+    New-Item -ItemType Directory -Force -Path $stage | Out-Null
+    Expand-Archive -Force -Path $zipPath -DestinationPath $stage
+
+    $required = @("codex.exe", "codexflow.exe", "codex-code-mode-host.exe")
+    foreach ($name in $required) {
+        $path = Join-Path $stage $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Incomplete CodexFlow runtime bundle: missing $name"
+        }
+    }
+
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    Expand-Archive -Force -Path $zipPath -DestinationPath $InstallDir
+    foreach ($name in $required) {
+        Copy-Item -Force (Join-Path $stage $name) (Join-Path $InstallDir $name)
+    }
 
     & (Join-Path $InstallDir "codexflow.exe") setup --force
 
@@ -68,6 +82,8 @@ try {
 
     Write-Host "Installed CodexFlow:"
     Write-Host "  $InstallDir"
+    Write-Host "Runtime companions verified:"
+    Write-Host "  codex-code-mode-host.exe"
     Write-Host "Launcher:"
     Write-Host "  $launcher"
     Write-Host "Stock codex PATH resolution was not changed."
