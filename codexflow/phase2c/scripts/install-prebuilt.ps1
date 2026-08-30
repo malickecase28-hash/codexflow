@@ -9,10 +9,20 @@ $ErrorActionPreference = "Stop"
 
 if (-not $InstallDir) {
     if (Test-Path "F:\") {
-        $InstallDir = "F:\CodexFlow\bin"
+        $InstallDir = "F:\CodexFlow"
     } else {
-        $InstallDir = Join-Path $HOME ".codexflow\prebuilt"
+        $InstallDir = Join-Path $HOME ".codexflow\runtime"
     }
+}
+
+# Backward compatibility with the Phase 2C default, which pointed directly at
+# an installation bin directory. Phase 3C treats the parent as a versioned
+# runtime root instead of overwriting a live bundle in place.
+$installLeaf = Split-Path -Leaf $InstallDir
+$InstallRoot = if ($installLeaf -ieq "bin") {
+    Split-Path -Parent $InstallDir
+} else {
+    $InstallDir
 }
 
 $releaseApi = if ($Tag) {
@@ -52,7 +62,12 @@ try {
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     Expand-Archive -Force -Path $zipPath -DestinationPath $stage
 
-    $required = @("codex.exe", "codexflow.exe", "codex-code-mode-host.exe")
+    $required = @(
+        "codex.exe",
+        "codexflow.exe",
+        "codex-code-mode-host.exe",
+        "codexflow-supervisor.exe"
+    )
     foreach ($name in $required) {
         $path = Join-Path $stage $name
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
@@ -60,17 +75,69 @@ try {
         }
     }
 
-    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    $releaseName = if ($Tag) { $Tag } elseif ($release.tag_name) { $release.tag_name } else { "release-$($release.id)" }
+    $safeReleaseName = [regex]::Replace($releaseName, '[^A-Za-z0-9._-]', '_')
+    $releaseId = "$safeReleaseName-$($actual.Substring(0, 12))"
+    $releasesDir = Join-Path $InstallRoot "releases"
+    $candidateRoot = Join-Path $releasesDir $releaseId
+    $candidateBin = Join-Path $candidateRoot "bin"
+
+    New-Item -ItemType Directory -Force -Path $releasesDir | Out-Null
+    if (Test-Path -LiteralPath $candidateRoot) {
+        Remove-Item -Recurse -Force $candidateRoot
+    }
+    New-Item -ItemType Directory -Force -Path $candidateBin | Out-Null
     foreach ($name in $required) {
-        Copy-Item -Force (Join-Path $stage $name) (Join-Path $InstallDir $name)
+        Copy-Item -Force (Join-Path $stage $name) (Join-Path $candidateBin $name)
     }
 
-    & (Join-Path $InstallDir "codexflow.exe") setup --force
+    # Candidate smoke tests happen before current.txt is changed. A failed
+    # candidate therefore cannot replace the known-good runtime.
+    & (Join-Path $candidateBin "codex.exe") --version
+    if ($LASTEXITCODE -ne 0) { throw "Candidate codex.exe smoke test failed" }
+    & (Join-Path $candidateBin "codexflow.exe") --version
+    if ($LASTEXITCODE -ne 0) { throw "Candidate codexflow.exe smoke test failed" }
+    & (Join-Path $candidateBin "codexflow-supervisor.exe") --version
+    if ($LASTEXITCODE -ne 0) { throw "Candidate codexflow-supervisor.exe smoke test failed" }
+
+    # Install/update the CodexFlow profile from the validated candidate before
+    # promotion. If setup fails, current.txt remains unchanged.
+    & (Join-Path $candidateBin "codexflow.exe") setup --force
+    if ($LASTEXITCODE -ne 0) { throw "Candidate CodexFlow setup failed" }
+
+    $currentPointer = Join-Path $InstallRoot "current.txt"
+    $previousPointer = Join-Path $InstallRoot "previous.txt"
+    $oldCurrent = if (Test-Path -LiteralPath $currentPointer) {
+        (Get-Content -Raw $currentPointer).Trim()
+    } else {
+        $null
+    }
+
+    if ($oldCurrent -and $oldCurrent -ne $releaseId) {
+        $previousTmp = "$previousPointer.tmp"
+        $oldCurrent | Set-Content -Encoding ASCII $previousTmp
+        Move-Item -Force $previousTmp $previousPointer
+    }
+
+    $currentTmp = "$currentPointer.tmp"
+    $releaseId | Set-Content -Encoding ASCII $currentTmp
+    Move-Item -Force $currentTmp $currentPointer
 
     $launcherDir = Join-Path $HOME ".codexflow\bin"
     New-Item -ItemType Directory -Force -Path $launcherDir | Out-Null
     $launcher = Join-Path $launcherDir "codexflow.cmd"
-    "@echo off`r`n`"$InstallDir\codexflow.exe`" %*`r`n" | Set-Content -Encoding ASCII $launcher
+    $launcherText = @"
+@echo off
+setlocal
+set "CODEXFLOW_ROOT=$InstallRoot"
+set /p "CODEXFLOW_RELEASE="<"$currentPointer"
+if not defined CODEXFLOW_RELEASE (
+  echo CodexFlow runtime pointer is empty. 1>&2
+  exit /b 1
+)
+"$InstallRoot\releases\%CODEXFLOW_RELEASE%\bin\codexflow.exe" %*
+"@
+    $launcherText | Set-Content -Encoding ASCII $launcher
 
     if ($AddToPath) {
         $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -80,10 +147,17 @@ try {
         }
     }
 
-    Write-Host "Installed CodexFlow:"
-    Write-Host "  $InstallDir"
+    Write-Host "Installed CodexFlow runtime candidate and promoted it atomically:"
+    Write-Host "  $candidateBin"
+    Write-Host "Current release:"
+    Write-Host "  $releaseId"
+    if ($oldCurrent -and $oldCurrent -ne $releaseId) {
+        Write-Host "Previous release retained:"
+        Write-Host "  $oldCurrent"
+    }
     Write-Host "Runtime companions verified:"
     Write-Host "  codex-code-mode-host.exe"
+    Write-Host "  codexflow-supervisor.exe"
     Write-Host "Launcher:"
     Write-Host "  $launcher"
     Write-Host "Stock codex PATH resolution was not changed."
