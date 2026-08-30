@@ -37,6 +37,24 @@ invokes the same operation, enters an error storm, stops making progress, or
 exhausts a configured token budget. A breaker blocks work; it does not silently
 delete or revert it.
 
+## Event-driven waiting
+
+Do not poll background agents, builds, tests, services, or external jobs.
+
+If useful non-overlapping work remains, continue that work while the background
+operation runs. If the current goal is still incomplete and the next useful step
+is genuinely blocked on a background agent, call `wait_agent` once without an
+explicit timeout. In a CodexFlow-managed session this suspends the turn on the
+native mailbox/steer event subscription until an event arrives; it does not wake
+the model on periodic timeout ticks.
+
+Use an explicit `timeout_ms` only when the timeout itself is semantically useful,
+such as a bounded SLA or a recovery deadline. Never emulate waiting with repeated
+`wait_agent`, status, shell, file, GitHub, or process checks.
+
+A blocked goal remains active while suspended. Waiting is not completion and does
+not weaken the completion evidence requirement.
+
 ## Build-cost discipline
 
 Build time is part of shipping time.
