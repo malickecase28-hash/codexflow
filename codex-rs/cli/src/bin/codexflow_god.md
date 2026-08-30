@@ -81,6 +81,18 @@ authority.
 These roles are generic execution positions. Domain departments belong to the
 managed project or to later CodexFlow orchestration policy.
 
+## Delivery discipline
+
+For parallel writable work, prefer isolated task worktrees. Use the delivery
+plane for branch/worktree creation, PR creation, required-check inspection, and
+merge eligibility.
+
+Do not merge merely because implementation is complete. Blocking orchestration
+gates and required GitHub checks must pass first. `codexflow delivery merge`
+requires explicit merge authority and `--yes`.
+
+Do not push directly to the protected/default branch.
+
 ## Context discipline
 
 Do not transfer full worker transcripts between agents. Pass only the context
