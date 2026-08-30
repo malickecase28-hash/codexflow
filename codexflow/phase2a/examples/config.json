@@ -1,0 +1,8 @@
+{
+  "schema": "codexflow.project.v1",
+  "default_topology": "adaptive",
+  "independent_review": true,
+  "max_live_agents": 8,
+  "pr_automation": false,
+  "merge_automation": false
+}

@@ -1,0 +1,87 @@
+[
+  {
+    "path": "ARCHITECTURE.md",
+    "bytes": 1628,
+    "sha256": "e01ccc67e4429624916a24bec606b5d004dc034e532040366cc04ea433ba57a7"
+  },
+  {
+    "path": "LICENSE-NOTICE.md",
+    "bytes": 576,
+    "sha256": "6905e41d659836774a0f088a4854c4de52f2447bd3aa37f26596f148fdf4e318"
+  },
+  {
+    "path": "README.md",
+    "bytes": 6772,
+    "sha256": "94f8dbd62b30ed326c36336864687d1928e454df88ec5fb3fb726da21fc0a74c"
+  },
+  {
+    "path": "UPSTREAM_BASELINE.md",
+    "bytes": 1708,
+    "sha256": "9784b5ea99cdd02ea803a523689076df93a7bebe563270e386eb163d0eb56bb1"
+  },
+  {
+    "path": "codexflow.py",
+    "bytes": 20508,
+    "sha256": "6623fc38dcd498d8c6c6b22302b67387822d44c984f42d7f98a90f657d2f23f3"
+  },
+  {
+    "path": "examples/config.json",
+    "bytes": 182,
+    "sha256": "1c08aff82b3967dab4ae9d2803b8415990db0ca6b69c830146a4bdb896e4ae20"
+  },
+  {
+    "path": "prompts/GOD.md",
+    "bytes": 4771,
+    "sha256": "cb76f88feef68099ae2e04ca9fa7b48579b8f125092ca4b3a2535a231c45558b"
+  },
+  {
+    "path": "roles/trinity_explorer.toml",
+    "bytes": 572,
+    "sha256": "96c96ebc7b9adbce8055cdb7247318c7ff40743ac98ada3d6f4679d65e5a0329"
+  },
+  {
+    "path": "roles/trinity_integrator.toml",
+    "bytes": 608,
+    "sha256": "217ab45b5cbefeabb0d73ac5109fae77305a26400813d536493965195e8ae689"
+  },
+  {
+    "path": "roles/trinity_reviewer.toml",
+    "bytes": 821,
+    "sha256": "4b43473ce5855a853a7337b5dd0b6844da9afee6ff5977a4e287b099a291b1d1"
+  },
+  {
+    "path": "roles/trinity_verifier.toml",
+    "bytes": 579,
+    "sha256": "29036f56332c0508df2e243aef9c4e1d54cb454cc8a4bfe4d3bf7886e6e19342"
+  },
+  {
+    "path": "roles/trinity_worker.toml",
+    "bytes": 745,
+    "sha256": "28b92e8814474cdc82c84e4d10552e16f8549ea710c3f50e1055b1878a31ab25"
+  },
+  {
+    "path": "scripts/codexflow.cmd",
+    "bytes": 182,
+    "sha256": "3fff88d1e7c28e927caa39894ecf6e01c600819885ffda00103e60151153e300"
+  },
+  {
+    "path": "scripts/doctor.ps1",
+    "bytes": 329,
+    "sha256": "77a27207be77cc3c05aa77938b99e15d3cfa3ea127da02511d16ae1364405023"
+  },
+  {
+    "path": "scripts/install.ps1",
+    "bytes": 1255,
+    "sha256": "659b13f6c1571193826a4823841a4b6a9b36c7fd7f5104bef7045e727dfdf104"
+  },
+  {
+    "path": "scripts/uninstall.ps1",
+    "bytes": 921,
+    "sha256": "962aa5f08a3d0f2c859723974133ef44e7099b36e62e205c9c083fc602cf56cc"
+  },
+  {
+    "path": "tests/test_codexflow.py",
+    "bytes": 3499,
+    "sha256": "e9f4290f746e91f4aaf3af16cb9df8d3443629564cede84481f75e93ddb085c6"
+  }
+]
