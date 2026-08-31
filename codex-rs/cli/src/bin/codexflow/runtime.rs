@@ -287,27 +287,25 @@ pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(task)?);
             Ok(())
         }),
-        RuntimeCommand::TaskWait { id, await_id } => {
-            with_locked_ledger(project_root, |ledger| {
-                validate_id(&await_id)?;
-                let task = ledger
-                    .tasks
-                    .get_mut(&id)
-                    .with_context(|| format!("unknown task: {id}"))?;
-                task.status = "blocked_waiting".to_string();
-                task.waiting_on = Some(await_id.clone());
-                task.updated_at = now_iso();
-                append_event(
-                    project_root,
-                    "task.waiting",
-                    "runtime",
-                    Some(&id),
-                    &format!("waiting on {await_id}"),
-                )?;
-                println!("{}", serde_json::to_string_pretty(task)?);
-                Ok(())
-            })
-        }
+        RuntimeCommand::TaskWait { id, await_id } => with_locked_ledger(project_root, |ledger| {
+            validate_id(&await_id)?;
+            let task = ledger
+                .tasks
+                .get_mut(&id)
+                .with_context(|| format!("unknown task: {id}"))?;
+            task.status = "blocked_waiting".to_string();
+            task.waiting_on = Some(await_id.clone());
+            task.updated_at = now_iso();
+            append_event(
+                project_root,
+                "task.waiting",
+                "runtime",
+                Some(&id),
+                &format!("waiting on {await_id}"),
+            )?;
+            println!("{}", serde_json::to_string_pretty(task)?);
+            Ok(())
+        }),
         RuntimeCommand::TaskWake { id } => with_locked_ledger(project_root, |ledger| {
             let task = ledger
                 .tasks
@@ -419,24 +417,22 @@ pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(agent)?);
             Ok(())
         }),
-        RuntimeCommand::AgentTokens { name, add } => {
-            with_locked_ledger(project_root, |ledger| {
-                let agent = ledger
-                    .agents
-                    .get_mut(&name)
-                    .with_context(|| format!("unknown agent: {name}"))?;
-                agent.used_tokens = agent.used_tokens.saturating_add(add);
-                if let Some(task_id) = agent.task.clone()
-                    && let Some(task) = ledger.tasks.get_mut(&task_id)
-                {
-                    task.used_tokens = task.used_tokens.saturating_add(add);
-                    task.updated_at = now_iso();
-                }
-                agent.updated_at = now_iso();
-                println!("{}", serde_json::to_string_pretty(agent)?);
-                Ok(())
-            })
-        }
+        RuntimeCommand::AgentTokens { name, add } => with_locked_ledger(project_root, |ledger| {
+            let agent = ledger
+                .agents
+                .get_mut(&name)
+                .with_context(|| format!("unknown agent: {name}"))?;
+            agent.used_tokens = agent.used_tokens.saturating_add(add);
+            if let Some(task_id) = agent.task.clone()
+                && let Some(task) = ledger.tasks.get_mut(&task_id)
+            {
+                task.used_tokens = task.used_tokens.saturating_add(add);
+                task.updated_at = now_iso();
+            }
+            agent.updated_at = now_iso();
+            println!("{}", serde_json::to_string_pretty(agent)?);
+            Ok(())
+        }),
         RuntimeCommand::AgentList => {
             let ledger = load_or_init(project_root)?;
             println!("{}", serde_json::to_string_pretty(&ledger.agents)?);
@@ -816,10 +812,7 @@ fn validate_id(value: &str) -> Result<()> {
     if value.is_empty()
         || value.len() > 64
         || !value.bytes().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || byte == b'_'
-                || byte == b'-'
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-'
         })
     {
         bail!("invalid id {value:?}; use lowercase letters, digits, _ or -, max 64 chars");

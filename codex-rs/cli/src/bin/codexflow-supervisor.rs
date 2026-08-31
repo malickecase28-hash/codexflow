@@ -207,7 +207,10 @@ fn main() -> Result<()> {
         }
         Command::Status { project_root } => {
             let root = canonical_project_root(project_root)?;
-            print_value(execute_with_optional_supervisor(&root, WireRequest::Status)?)
+            print_value(execute_with_optional_supervisor(
+                &root,
+                WireRequest::Status,
+            )?)
         }
     }
 }
@@ -422,10 +425,7 @@ fn supervisor_status(project_root: &Path) -> Result<Value> {
         .values()
         .filter(|spec| spec.state == "waiting")
         .count();
-    let fired = awaits
-        .values()
-        .filter(|spec| spec.state == "fired")
-        .count();
+    let fired = awaits.values().filter(|spec| spec.state == "fired").count();
     Ok(json!({
         "project_root": project_root,
         "endpoint": endpoint,
@@ -473,10 +473,7 @@ fn resolve_existing_events_for_await(
     Ok(())
 }
 
-fn resolve_event_against_awaits(
-    project_root: &Path,
-    event: &EventEnvelope,
-) -> Result<Vec<String>> {
+fn resolve_event_against_awaits(project_root: &Path, event: &EventEnvelope) -> Result<Vec<String>> {
     let mut awaits = load_awaits(project_root)?;
     let matching_ids = awaits
         .iter()
@@ -550,9 +547,7 @@ fn validate_event_kind(kind: &str) -> Result<()> {
     if kind.is_empty()
         || kind.len() > 128
         || !kind.bytes().all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || matches!(byte, b'.' | b'_' | b'-')
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
         })
     {
         bail!("invalid event kind {kind:?}");
@@ -563,9 +558,9 @@ fn validate_event_kind(kind: &str) -> Result<()> {
 fn validate_id(value: &str) -> Result<()> {
     if value.is_empty()
         || value.len() > 96
-        || !value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'/')
-        })
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'/'))
     {
         bail!("invalid id {value:?}");
     }
@@ -575,9 +570,7 @@ fn validate_id(value: &str) -> Result<()> {
 fn validate_owner(owner: &str) -> Result<()> {
     if owner.trim().is_empty()
         || owner.len() > 256
-        || owner
-            .chars()
-            .any(|ch| matches!(ch, '\r' | '\n' | '\0'))
+        || owner.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0'))
     {
         bail!("invalid owner");
     }
@@ -599,8 +592,7 @@ fn validate_topics(topics: &[String]) -> Result<()> {
 }
 
 fn canonical_project_root(path: PathBuf) -> Result<PathBuf> {
-    fs::canonicalize(&path)
-        .with_context(|| format!("canonicalize project root {}", path.display()))
+    fs::canonicalize(&path).with_context(|| format!("canonicalize project root {}", path.display()))
 }
 
 fn state_dir(project_root: &Path) -> PathBuf {

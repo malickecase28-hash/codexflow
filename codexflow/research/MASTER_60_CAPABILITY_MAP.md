@@ -215,7 +215,7 @@ Status vocabulary:
 
 ## 52. Strong defaults — DefaultResolver
 
-**Choice: project/model/task profiles provide defaults for working directory, search depth, pagination, test/build command, patch style, timeout, retries and delivery behavior.** Defaults are visible and overrideable but normally remove low-value choices from the model. The build-cost manager is an early example: `cargo check`/focused tests are default while expensive release linking requires a real reason.
+**Choice: project/model/task profiles provide defaults for working directory, search depth, pagination, test/build command, patch style, timeout, retries and delivery behavior.** Defaults are visible and overridable but normally remove low-value choices from the model. The build-cost manager is an early example: `cargo check`/focused tests are default while expensive release linking requires a real reason.
 
 ## 53. Semantic affordances — ToolSemantics
 

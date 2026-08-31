@@ -93,13 +93,7 @@ pub fn handle(project_root: &Path, args: BuildArgs) -> Result<()> {
             target_dir,
             cache_mode,
             max_jobs,
-        } => configure(
-            project_root,
-            working_dir,
-            target_dir,
-            cache_mode,
-            max_jobs,
-        ),
+        } => configure(project_root, working_dir, target_dir, cache_mode, max_jobs),
         BuildCommand::Check { cargo_args } => {
             run_cargo(project_root, "check", false, false, cargo_args)
         }
@@ -112,9 +106,17 @@ pub fn handle(project_root: &Path, args: BuildArgs) -> Result<()> {
         BuildCommand::Release { yes, cargo_args } => {
             let policy = load_policy(project_root)?;
             if policy.release_requires_confirmation && !yes {
-                bail!("release build requires --yes; use cargo check/test during normal development");
+                bail!(
+                    "release build requires --yes; use cargo check/test during normal development"
+                );
             }
-            run_cargo(project_root, "build", true, policy.timings_on_release, cargo_args)
+            run_cargo(
+                project_root,
+                "build",
+                true,
+                policy.timings_on_release,
+                cargo_args,
+            )
         }
         BuildCommand::Timings {
             release,
@@ -225,7 +227,8 @@ fn run_cargo(
         command.env("CARGO_TARGET_DIR", target_dir);
     }
     if policy.cache_mode == "sccache" {
-        which::which("sccache").context("sccache cache mode selected but sccache is not installed")?;
+        which::which("sccache")
+            .context("sccache cache mode selected but sccache is not installed")?;
         command.env("RUSTC_WRAPPER", "sccache");
         command.env("CARGO_INCREMENTAL", "0");
     }
@@ -264,7 +267,10 @@ fn resolve_workdir(project_root: &Path, policy: &BuildPolicy) -> Result<PathBuf>
         if path.join("Cargo.toml").is_file() {
             return Ok(path);
         }
-        bail!("configured Cargo working directory has no Cargo.toml: {}", path.display());
+        bail!(
+            "configured Cargo working directory has no Cargo.toml: {}",
+            path.display()
+        );
     }
     if project_root.join("Cargo.toml").is_file() {
         return Ok(project_root.to_path_buf());

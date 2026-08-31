@@ -278,8 +278,8 @@ fn load_config(project_root: &Path) -> Result<OrchestrationConfig> {
         .join("maintenance")
         .join("departments.json");
     if legacy.exists() {
-        let data = fs::read_to_string(&legacy)
-            .with_context(|| format!("read {}", legacy.display()))?;
+        let data =
+            fs::read_to_string(&legacy).with_context(|| format!("read {}", legacy.display()))?;
         let value: serde_json::Value =
             serde_json::from_str(&data).with_context(|| format!("parse {}", legacy.display()))?;
         if let Some(items) = value.get("departments").and_then(|value| value.as_array()) {
@@ -401,7 +401,10 @@ fn classify_risk(task: &str) -> String {
 fn topology_for(risk: &str, department_count: usize, task: &str) -> &'static str {
     if risk == "low"
         && department_count == 0
-        && contains_any(task, &["docs", "documentation", "typo", "comment", "readme"])
+        && contains_any(
+            task,
+            &["docs", "documentation", "typo", "comment", "readme"],
+        )
     {
         "god_direct"
     } else if risk == "low" {

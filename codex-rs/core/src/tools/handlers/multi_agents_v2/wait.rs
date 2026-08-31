@@ -56,7 +56,8 @@ impl Handler {
         let max_timeout_ms = turn.config.multi_agent_v2.max_wait_timeout_ms;
         let default_timeout_ms = turn.config.multi_agent_v2.default_wait_timeout_ms;
         let requested_timeout_ms = args.timeout_ms;
-        let suspend_until_event = requested_timeout_ms.is_none() && codexflow_event_suspend_enabled();
+        let suspend_until_event =
+            requested_timeout_ms.is_none() && codexflow_event_suspend_enabled();
         let timeout_ms = match requested_timeout_ms {
             Some(ms) if ms > max_timeout_ms => {
                 return Err(FunctionCallError::RespondToModel(format!(
