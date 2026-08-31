@@ -176,9 +176,6 @@ jobs:
           - name: Linux
             runner: ubuntu-24.04
             timeout_minutes: 30
-          - name: macOS
-            runner: macos-15-xlarge
-            timeout_minutes: 30
           - name: Windows
             runner: windows-2025
             timeout_minutes: 30
