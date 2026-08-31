@@ -91,7 +91,7 @@ Its fundamental architecture is roughly:
 
 **Event-sourced sessions.**
 
-A DeepSeek session is an append-only typed event log. The LLM conversation is *derived* from that log instead of being the canonical state. ([GitHub][3])
+A DeepSeek session is an append-only typed event log. The LLM conversation is _derived_ from that log instead of being the canonical state. ([GitHub][3])
 
 That is an extremely good design.
 
@@ -113,15 +113,15 @@ model-visible context
 
 Now you can independently:
 
-* compact
-* replay
-* hide
-* replace
-* summarize
-* inspect
-* audit
-* reconstruct
-* fork
+- compact
+- replay
+- hide
+- replace
+- summarize
+- inspect
+- audit
+- reconstruct
+- fork
 
 without corrupting the original trajectory.
 
@@ -131,16 +131,16 @@ DeepSeek does not hard-wire its summarizer into the loop. The compactor is repla
 
 Its current design records:
 
-* selected ranges
-* token counts
-* summaries
-* shadowed events
-* model calls
-* compaction lifecycle
+- selected ranges
+- token counts
+- summaries
+- shadowed events
+- model calls
+- compaction lifecycle
 
 as durable events. ([GitHub][4])
 
-That is *very* compatible with what you are already doing with Headroom.
+That is _very_ compatible with what you are already doing with Headroom.
 
 ### Even oversized tool results have a separate pruner
 
@@ -158,13 +158,13 @@ repeat
 
 Things such as:
 
-* permission policy
-* compaction
-* retries
-* sandboxing
-* plan mode
-* persistence
-* subagents
+- permission policy
+- compaction
+- retries
+- sandboxing
+- plan mode
+- persistence
+- subagents
 
 live outside it and intercept lifecycle events. ([GitHub][6])
 
@@ -246,10 +246,10 @@ This is extremely relevant to small models.
 
 OMP exposes:
 
-* `ast_grep`
-* `ast_edit`
-* structural matching
-* dry-run rewrites
+- `ast_grep`
+- `ast_edit`
+- structural matching
+- dry-run rewrites
 
 through ast-grep/tree-sitter. ([GitHub][10])
 
@@ -292,14 +292,14 @@ This is huge.
 
 OMP has model roles including:
 
-* `default`
-* `smol`
-* `slow`
-* `vision`
-* `plan`
-* `designer`
-* `commit`
-* `task`
+- `default`
+- `smol`
+- `slow`
+- `vision`
+- `plan`
+- `designer`
+- `commit`
+- `task`
 
 and configuration can map each role to different providers/models and reasoning levels. ([GitHub][11])
 
@@ -358,22 +358,22 @@ It is Apache-2.0, supports Qwen, OpenAI, Anthropic, Gemini APIs and local Ollama
 
 It now includes:
 
-* Auto-Memory
-* Auto-Skills
-* subagents
-* agent teams
-* dynamic workflows
-* hooks
-* MCP
-* plan mode
-* LSP
-* sandbox
-* git worktrees
-* computer use
-* headless operation
-* session management
-* daemon mode
-* SDK
+- Auto-Memory
+- Auto-Skills
+- subagents
+- agent teams
+- dynamic workflows
+- hooks
+- MCP
+- plan mode
+- LSP
+- sandbox
+- git worktrees
+- computer use
+- headless operation
+- session management
+- daemon mode
+- SDK
 
 ([GitHub][13])
 
@@ -385,11 +385,11 @@ That makes it particularly important for understanding **model/harness co-design
 
 Qwen's Agent tool can:
 
-* create specialized workers
-* fork parent context
-* restrict worker tools
-* run workers independently
-* preserve worker state for continuation
+- create specialized workers
+- fork parent context
+- restrict worker tools
+- run workers independently
+- preserve worker state for continuation
 
 ([GitHub][14])
 
@@ -417,10 +417,10 @@ And from an architectural standpoint it has become very interesting.
 
 Current configuration includes:
 
-* history token budget
-* retained token budget
-* context compression
-* message budgets
+- history token budget
+- retained token budget
+- context compression
+- message budgets
 
 ([GitHub][16])
 
@@ -438,9 +438,9 @@ BeforeToolSelection
 
 `BeforeModel` can change:
 
-* context
-* prompt
-* model parameters
+- context
+- prompt
+- model parameters
 
 while `BeforeToolSelection` can alter which tools are exposed. ([GitHub][16])
 
@@ -476,9 +476,9 @@ That is considerably better than asking the model to voluntarily manage itself.
 
 Gemini CLI has a TOML policy engine controlling whether tool calls are:
 
-* allowed
-* denied
-* user-confirmed
+- allowed
+- denied
+- user-confirmed
 
 ([GitHub][17])
 
@@ -496,12 +496,12 @@ Gemini CLI has explicit automatic infinite-loop detection. ([GitHub][19])
 
 Subagents receive:
 
-* independent context
-* custom system prompt
-* specific model
-* restricted tools
-* isolated MCP servers
-* per-subagent policy
+- independent context
+- custom system prompt
+- specific model
+- restricted tools
+- isolated MCP servers
+- per-subagent policy
 
 and are prevented from recursively spawning more subagents. ([GitHub][20])
 
@@ -542,13 +542,13 @@ bucket.
 
 The desktop system itself exposes:
 
-* parallel agents
-* browser agent
-* artifacts
-* plans
-* code diffs
-* architecture diagrams
-* browser recordings
+- parallel agents
+- browser agent
+- artifacts
+- plans
+- code diffs
+- architecture diagrams
+- browser recordings
 
 ([Google Antigravity][22])
 
@@ -627,14 +627,14 @@ Excellent pattern.
 
 Current open-source Codex has lifecycle hook machinery covering events such as:
 
-* PreToolUse
-* PermissionRequest
-* PostToolUse
-* PreCompact
-* PostCompact
-* SessionStart
-* SessionEnd
-* UserPromptSubmit
+- PreToolUse
+- PermissionRequest
+- PostToolUse
+- PreCompact
+- PostCompact
+- SessionStart
+- SessionEnd
+- UserPromptSubmit
 
 ([GitHub][26])
 
@@ -678,13 +678,13 @@ It is essentially:
 
 Its project architecture centres around:
 
-* LSP lifecycle
-* symbols
-* semantic tools
-* symbolic editing
-* code-editor abstractions
-* memories
-* modes/context
+- LSP lifecycle
+- symbols
+- semantic tools
+- symbolic editing
+- code-editor abstractions
+- memories
+- modes/context
 
 ([GitHub][29])
 
@@ -740,26 +740,26 @@ You have already made what I think is the right architectural leap:
 
 Headroom is Apache 2.0 and provides:
 
-* library
-* proxy
-* MCP
-* reversible compression
-* content-specific compressors
-* shared context
-* cross-agent memory
-* failed-session learning
+- library
+- proxy
+- MCP
+- reversible compression
+- content-specific compressors
+- shared context
+- cross-agent memory
+- failed-session learning
 
 ([GitHub][31])
 
 It handles:
 
-* JSON
-* logs
-* code
-* diffs
-* RAG
-* files
-* conversation context
+- JSON
+- logs
+- code
+- diffs
+- RAG
+- files
+- conversation context
 
 and stores originals in its CCR system so compressed content can later be recovered. ([GitHub][32])
 
@@ -813,10 +813,10 @@ I would not blindly insert it everywhere.
 
 But it is worth testing for:
 
-* retrieved documents
-* long natural-language evidence
-* few-shot examples
-* verbose instructions
+- retrieved documents
+- long natural-language evidence
+- few-shot examples
+- verbose instructions
 
 rather than code.
 
@@ -832,13 +832,13 @@ Excellent secondary context tool.
 
 Repomix provides:
 
-* repository packing
-* token counting
-* directory maps
-* include/exclude control
-* secret detection
-* Tree-sitter structural compression
-* MCP support
+- repository packing
+- token counting
+- directory maps
+- include/exclude control
+- secret detection
+- Tree-sitter structural compression
+- MCP support
 
 ([GitHub][34])
 
@@ -919,13 +919,13 @@ I would regard Tree-sitter as basic harness infrastructure.
 
 Use it to generate:
 
-* symbol maps
-* imports
-* classes
-* signatures
-* dependency approximations
-* chunk boundaries
-* structural summaries
+- symbol maps
+- imports
+- classes
+- signatures
+- dependency approximations
+- chunk boundaries
+- structural summaries
 
 This lets you move repository understanding out of the LLM.
 
@@ -939,10 +939,10 @@ MIT.
 
 Structural:
 
-* search
-* lint
-* rewrite
-* codemods
+- search
+- lint
+- rewrite
+- codemods
 
 on top of Tree-sitter. ([GitHub][36])
 
@@ -995,12 +995,12 @@ This has become much more interesting than many people realize.
 
 PydanticAI toolsets can be:
 
-* wrapped
-* filtered
-* changed dynamically
-* approval-protected
-* deferred
-* composed
+- wrapped
+- filtered
+- changed dynamically
+- approval-protected
+- deferred
+- composed
 
 ([GitHub][38])
 
@@ -1040,10 +1040,10 @@ not 128 MCP schemas.
 
 PydanticAI can lazily expose whole bundles containing:
 
-* instructions
-* tools
-* hooks
-* model settings
+- instructions
+- tools
+- hooks
+- model settings
 
 ([GitHub][41])
 
@@ -1063,16 +1063,16 @@ If you're going deep into MCP, look at this carefully.
 
 ToolHive provides:
 
-* isolated MCP-server containers
-* registry
-* gateway
-* identity
-* access policy
-* audit
-* network policy
-* tool filtering
-* semantic tool search
-* deterministic workflows
+- isolated MCP-server containers
+- registry
+- gateway
+- identity
+- access policy
+- audit
+- network policy
+- tool filtering
+- semantic tool search
+- deterministic workflows
 
 ([GitHub][42])
 
@@ -1113,16 +1113,16 @@ For weaker local models this is one of my highest-priority recommendations.
 
 XGrammar guarantees structured generation using constrained decoding and supports:
 
-* JSON Schema
-* EBNF
-* Lark
-* structural tags
-* tool calling
-* Qwen
-* DeepSeek
-* Kimi
-* Llama
-* other common model styles
+- JSON Schema
+- EBNF
+- Lark
+- structural tags
+- tool calling
+- Qwen
+- DeepSeek
+- Kimi
+- Llama
+- other common model styles
 
 ([GitHub][44])
 
@@ -1150,9 +1150,9 @@ This is exactly how you help weaker models.
 
 ### Also inspect
 
-* Outlines
-* lm-format-enforcer
-* Instructor
+- Outlines
+- lm-format-enforcer
+- Instructor
 
 But for local inference, I would start with **XGrammar**.
 
@@ -1300,9 +1300,9 @@ Apache-2.0.
 
 Mem0 provides an easier-to-integrate memory subsystem supporting multiple scopes including:
 
-* User
-* Session
-* Agent
+- User
+- Session
+- Agent
 
 ([GitHub][51])
 
@@ -1334,10 +1334,10 @@ instead of flattening all three into vector entries.
 
 I'd use Graphiti for:
 
-* project history
-* architecture evolution
-* entity relationships
-* changing facts
+- project history
+- architecture evolution
+- entity relationships
+- changing facts
 
 rather than basic task scratch memory.
 
@@ -1353,21 +1353,21 @@ It **is** one of my first choices for the deterministic outer runtime.
 
 LangGraph provides:
 
-* durable execution
-* stateful graph workflows
-* checkpointing
-* human intervention
-* memory
-* fault recovery
+- durable execution
+- stateful graph workflows
+- checkpointing
+- human intervention
+- memory
+- fault recovery
 
 ([GitHub][52])
 
 The checkpointer stores state after each graph superstep, enabling:
 
-* time travel
-* interruption
-* replay
-* fault tolerance
+- time travel
+- interruption
+- replay
+- fault tolerance
 
 ([GitHub][53])
 
@@ -1405,11 +1405,11 @@ This is worth distinguishing from LangGraph itself.
 
 Deep Agents calls itself a batteries-included harness and bundles:
 
-* filesystem
-* planning
-* context management
-* subagents
-* skills
+- filesystem
+- planning
+- context management
+- subagents
+- skills
 
 while remaining model-agnostic, including local/self-hosted models. ([GitHub][54])
 
@@ -1445,13 +1445,13 @@ I would not necessarily use it for interactive coding turns.
 
 I would use it for:
 
-* jobs lasting hours/days
-* queued agents
-* CI agents
-* scheduled work
-* large batch work
-* external approvals
-* resilient multi-agent jobs
+- jobs lasting hours/days
+- queued agents
+- CI agents
+- scheduled work
+- large batch work
+- external approvals
+- resilient multi-agent jobs
 
 ---
 
@@ -1517,11 +1517,11 @@ SWE-agent should be treated as **research material for agent-computer interface 
 
 Some particularly useful findings from its ACI:
 
-* editors immediately run linters
-* invalid syntax can block the edit
-* file reads are bounded
-* search results are compressed
-* successful commands explicitly say they succeeded even if stdout is empty
+- editors immediately run linters
+- invalid syntax can block the edit
+- file reads are bounded
+- search results are compressed
+- successful commands explicitly say they succeeded even if stdout is empty
 
 These kinds of tiny interface decisions changed model performance substantially.
 
@@ -1539,24 +1539,24 @@ OpenHands is one of the strongest projects to study for the **workspace/runtime 
 
 Its architecture includes concepts such as:
 
-* agent
-* conversation state
-* tool system
-* workspaces
-* events
-* skills
-* condenser
-* security
+- agent
+- conversation state
+- tool system
+- workspaces
+- events
+- skills
+- condenser
+- security
 
 It also supports Dockerized execution.
 
 I'd mine it for:
 
-* local/remote workspace abstraction
-* event model
-* sandbox lifecycle
-* conversation state
-* security boundaries
+- local/remote workspace abstraction
+- event model
+- sandbox lifecycle
+- conversation state
+- security boundaries
 
 rather than necessarily copy its entire agent UX.
 
@@ -1566,14 +1566,14 @@ rather than necessarily copy its entire agent UX.
 
 Cline remains useful source material for:
 
-* Plan/Act separation
-* checkpoints
-* diff/revert
-* terminal monitoring
-* MCP
-* lifecycle hooks
-* agent teams
-* Git worktrees
+- Plan/Act separation
+- checkpoints
+- diff/revert
+- terminal monitoring
+- MCP
+- lifecycle hooks
+- agent teams
+- Git worktrees
 
 That makes it a good repository to inspect for **safe long-running editing sessions**.
 
@@ -1595,10 +1595,10 @@ Orchestrator
 
 Different modes can have different:
 
-* prompts
-* tools
-* write access
-* models
+- prompts
+- tools
+- write access
+- models
 
 Its Orchestrator delegates tasks rather than directly performing ordinary code edits.
 
@@ -1634,11 +1634,11 @@ You have reduced the effective branching factor.
 
 Goose is particularly useful as reference for:
 
-* MCP-centric architecture
-* local-model support
-* portable providers
-* ACP
-* custom distributions
+- MCP-centric architecture
+- local-model support
+- portable providers
+- ACP
+- custom distributions
 
 I'd look at it if you want your harness to become an **agent platform** rather than only a coding application.
 
@@ -1736,11 +1736,11 @@ Very relevant to your project.
 
 Provides a complete open-source browser agent with:
 
-* persistent browser
-* tools
-* recovery loops
-* local model support
-* custom actions
+- persistent browser
+- tools
+- recovery loops
+- local model support
+- custom actions
 
 ([GitHub][60])
 
@@ -1764,13 +1764,13 @@ Apache 2.0.
 
 It runs untrusted code inside local microVMs and supports:
 
-* Linux
-* macOS
-* Windows
-* OCI images
-* embedded runtime
-* no permanent daemon
-* hardware isolation
+- Linux
+- macOS
+- Windows
+- OCI images
+- embedded runtime
+- no permanent daemon
+- hardware isolation
 
 ([GitHub][61])
 
@@ -1857,15 +1857,15 @@ Mostly MIT OSS, with enterprise sections separately licensed. ([GitHub][65])
 
 Tracks:
 
-* LLM calls
-* tools
-* retrieval
-* latency
-* tokens
-* cost
-* evaluation
-* datasets
-* prompts
+- LLM calls
+- tools
+- retrieval
+- latency
+- tokens
+- cost
+- evaluation
+- datasets
+- prompts
 
 ([GitHub][66])
 
@@ -1907,12 +1907,12 @@ MIT.
 
 Alternative to Langfuse with strong OpenTelemetry orientation and:
 
-* tracing
-* datasets
-* experiments
-* evaluations
-* replay
-* prompt iteration
+- tracing
+- datasets
+- experiments
+- evaluations
+- replay
+- prompt iteration
 
 ([GitHub][67])
 
@@ -1930,11 +1930,11 @@ MIT, from the UK AI Security Institute.
 
 Excellent harness/evaluation framework with:
 
-* tool-using agents
-* multi-turn evaluations
-* model grading
-* extensibility
-* hundreds of existing evaluations
+- tool-using agents
+- multi-turn evaluations
+- model grading
+- extensibility
+- hundreds of existing evaluations
 
 ([GitHub][68])
 
@@ -1984,11 +1984,11 @@ That would be extremely valuable.
 
 Useful for:
 
-* regression evals
-* red teaming
-* output tests
-* provider comparisons
-* local Ollama/OpenAI-compatible models
+- regression evals
+- red teaming
+- output tests
+- provider comparisons
+- local Ollama/OpenAI-compatible models
 
 Its red-team/eval infrastructure can operate against local endpoints. ([GitHub][69])
 
@@ -2224,16 +2224,16 @@ Here's my actual shopping list.
 
 I would specifically **avoid writing your own**:
 
-* AST parser
-* LSP protocol stack
-* MCP registry
-* browser driver
-* microVM system
-* vector database
-* general workflow persistence
-* structured-generation decoder
-* telemetry database
-* provider compatibility gateway
+- AST parser
+- LSP protocol stack
+- MCP registry
+- browser driver
+- microVM system
+- vector database
+- general workflow persistence
+- structured-generation decoder
+- telemetry database
+- provider compatibility gateway
 
 Those are solved problems.
 
