@@ -8,8 +8,6 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tokio::time::timeout_at;
 
-const CODEXFLOW_PROJECT_ID_ENV: &str = "CODEXFLOW_PROJECT_ID";
-
 #[derive(Default)]
 pub(crate) struct Handler {
     options: WaitAgentTimeoutOptions,
@@ -55,9 +53,8 @@ impl Handler {
         let min_timeout_ms = turn.config.multi_agent_v2.min_wait_timeout_ms;
         let max_timeout_ms = turn.config.multi_agent_v2.max_wait_timeout_ms;
         let default_timeout_ms = turn.config.multi_agent_v2.default_wait_timeout_ms;
-        let requested_timeout_ms = args.timeout_ms;
-        let suspend_until_event =
-            requested_timeout_ms.is_none() && codexflow_event_suspend_enabled();
+        let suspend_until_event = args.until_event.unwrap_or(false);
+        let requested_timeout_ms = (!suspend_until_event).then_some(args.timeout_ms).flatten();
         let timeout_ms = match requested_timeout_ms {
             Some(ms) if ms > max_timeout_ms => {
                 return Err(FunctionCallError::RespondToModel(format!(
@@ -140,6 +137,7 @@ impl CoreToolRuntime for Handler {
 #[serde(deny_unknown_fields)]
 struct WaitArgs {
     timeout_ms: Option<i64>,
+    until_event: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -201,10 +199,6 @@ enum WaitOutcome {
     TimedOut,
 }
 
-fn codexflow_event_suspend_enabled() -> bool {
-    std::env::var_os(CODEXFLOW_PROJECT_ID_ENV).is_some()
-}
-
 fn pending_activity_outcome(pending_activity: Option<InputQueueActivity>) -> Option<WaitOutcome> {
     pending_activity.map(|activity| match activity {
         InputQueueActivity::Mailbox => WaitOutcome::MailboxActivity,
@@ -220,10 +214,7 @@ async fn wait_for_activity_until_event(
         return outcome;
     }
     match activity_rx.changed().await {
-        Ok(()) => match *activity_rx.borrow_and_update() {
-            InputQueueActivity::Mailbox => WaitOutcome::MailboxActivity,
-            InputQueueActivity::Steer => WaitOutcome::Steered,
-        },
+        Ok(()) => changed_activity_outcome(activity_rx),
         Err(_) => WaitOutcome::TimedOut,
     }
 }
@@ -237,11 +228,17 @@ async fn wait_for_activity(
         return outcome;
     }
     match timeout_at(deadline, activity_rx.changed()).await {
-        Ok(Ok(())) => match *activity_rx.borrow_and_update() {
-            InputQueueActivity::Mailbox => WaitOutcome::MailboxActivity,
-            InputQueueActivity::Steer => WaitOutcome::Steered,
-        },
+        Ok(Ok(())) => changed_activity_outcome(activity_rx),
         Ok(Err(_)) | Err(_) => WaitOutcome::TimedOut,
+    }
+}
+
+fn changed_activity_outcome(
+    activity_rx: &mut tokio::sync::watch::Receiver<InputQueueActivity>,
+) -> WaitOutcome {
+    match *activity_rx.borrow_and_update() {
+        InputQueueActivity::Mailbox => WaitOutcome::MailboxActivity,
+        InputQueueActivity::Steer => WaitOutcome::Steered,
     }
 }
 
@@ -280,5 +277,12 @@ mod tests {
             result.message,
             "Event wait ended because the activity channel closed."
         );
+    }
+
+    #[test]
+    fn wait_args_accept_explicit_event_mode() {
+        let args: WaitArgs = serde_json::from_value(serde_json::json!({"until_event": true}))
+            .expect("explicit event mode should deserialize");
+        assert_eq!(args.until_event, Some(true));
     }
 }

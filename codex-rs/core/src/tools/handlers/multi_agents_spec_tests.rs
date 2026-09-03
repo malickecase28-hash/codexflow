@@ -404,6 +404,7 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         .expect("wait_agent should use object params");
     assert!(!properties.contains_key("targets"));
     assert!(properties.contains_key("timeout_ms"));
+    assert!(properties.contains_key("until_event"));
     assert!(description.contains(
         "Does not return the content; returns either a summary of which agents have updates (if any)"
     ));
@@ -412,6 +413,14 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
             .get("timeout_ms")
             .and_then(|schema| schema.description.as_deref()),
         Some("Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000.")
+    );
+    assert_eq!(
+        properties
+            .get("until_event")
+            .and_then(|schema| schema.description.as_deref()),
+        Some(
+            "Wait until activity arrives instead of using a timeout. Omit or set false for bounded waiting; timeout_ms is ignored when true."
+        )
     );
     assert_eq!(parameters.required.as_ref(), None);
     assert_eq!(

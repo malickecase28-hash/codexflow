@@ -43,10 +43,10 @@ Do not poll background agents, builds, tests, services, or external jobs.
 
 If useful non-overlapping work remains, continue that work while the background
 operation runs. If the current goal is still incomplete and the next useful step
-is genuinely blocked on a background agent, call `wait_agent` once without an
-explicit timeout. In a CodexFlow-managed session this suspends the turn on the
-native mailbox/steer event subscription until an event arrives; it does not wake
-the model on periodic timeout ticks.
+is genuinely blocked on a background agent, call `wait_agent` once with
+`{"until_event":true}`. This suspends the turn on the native mailbox/steer event
+subscription until an event arrives; it does not wake the model on periodic
+timeout ticks.
 
 Use an explicit `timeout_ms` only when the timeout itself is semantically useful,
 such as a bounded SLA or a recovery deadline. Never emulate waiting with repeated
