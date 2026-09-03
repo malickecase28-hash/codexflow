@@ -70,6 +70,8 @@ enum Command {
         owner: String,
         #[arg(long = "topic", required = true)]
         topics: Vec<String>,
+        #[arg(long)]
+        key: Option<String>,
         #[arg(long, default_value_t = 0)]
         after_seq: u64,
     },
@@ -112,6 +114,8 @@ struct AwaitSpec {
     id: String,
     owner: String,
     topics: Vec<String>,
+    #[serde(default)]
+    key: Option<String>,
     after_seq: u64,
     state: String,
     matched_event_id: Option<String>,
@@ -139,6 +143,7 @@ enum WireRequest {
         id: String,
         owner: String,
         topics: Vec<String>,
+        key: Option<String>,
         after_seq: u64,
     },
     Inbox {
@@ -181,6 +186,7 @@ fn main() -> Result<()> {
             id,
             owner,
             topics,
+            key,
             after_seq,
         } => {
             let root = canonical_project_root(project_root)?;
@@ -190,6 +196,7 @@ fn main() -> Result<()> {
                     id,
                     owner,
                     topics,
+                    key,
                     after_seq,
                 },
             )?)
@@ -317,14 +324,16 @@ fn execute_request(project_root: &Path, request: WireRequest) -> Result<Value> {
     match request {
         WireRequest::Publish { kind, key, payload } => {
             validate_event_kind(&kind)?;
+            validate_key(key.as_deref())?;
             publish_event(project_root, kind, key, payload)
         }
         WireRequest::RegisterAwait {
             id,
             owner,
             topics,
+            key,
             after_seq,
-        } => register_await(project_root, id, owner, topics, after_seq),
+        } => register_await(project_root, id, owner, topics, key, after_seq),
         WireRequest::Inbox { owner, clear } => read_inbox(project_root, &owner, clear),
         WireRequest::Status => supervisor_status(project_root),
     }
@@ -358,15 +367,17 @@ fn register_await(
     id: String,
     owner: String,
     topics: Vec<String>,
+    key: Option<String>,
     after_seq: u64,
 ) -> Result<Value> {
     validate_id(&id)?;
     validate_owner(&owner)?;
     validate_topics(&topics)?;
+    validate_key(key.as_deref())?;
     with_state_lock(project_root, || {
         let mut awaits = load_awaits(project_root)?;
         if let Some(existing) = awaits.get(&id) {
-            if same_await_registration(existing, &owner, &topics, after_seq) {
+            if same_await_registration(existing, &owner, &topics, key.as_deref(), after_seq) {
                 return Ok(serde_json::to_value(existing)?);
             }
             bail!("await id already exists with different configuration: {id}");
@@ -379,6 +390,7 @@ fn register_await(
                 id: id.clone(),
                 owner,
                 topics,
+                key,
                 after_seq,
                 state: "waiting".to_string(),
                 matched_event_id: None,
@@ -401,9 +413,13 @@ fn same_await_registration(
     existing: &AwaitSpec,
     owner: &str,
     topics: &[String],
+    key: Option<&str>,
     after_seq: u64,
 ) -> bool {
-    existing.owner == owner && existing.topics == topics && existing.after_seq == after_seq
+    existing.owner == owner
+        && existing.topics == topics
+        && existing.key.as_deref() == key
+        && existing.after_seq == after_seq
 }
 
 fn read_inbox(project_root: &Path, owner: &str, clear: bool) -> Result<Value> {
@@ -467,6 +483,7 @@ fn resolve_existing_events_for_await(
                 .topics
                 .iter()
                 .any(|topic| topic_matches(topic, &event.kind))
+            && event_key_matches(spec.key.as_deref(), event.key.as_deref())
     }) {
         fire_await(project_root, awaits, await_id, &event)?;
     }
@@ -484,6 +501,7 @@ fn resolve_event_against_awaits(project_root: &Path, event: &EventEnvelope) -> R
                     .topics
                     .iter()
                     .any(|topic| topic_matches(topic, &event.kind))
+                && event_key_matches(spec.key.as_deref(), event.key.as_deref())
         })
         .map(|(id, _)| id.clone())
         .collect::<Vec<_>>();
@@ -543,6 +561,10 @@ fn topic_matches(topic: &str, kind: &str) -> bool {
     topic == kind
 }
 
+fn event_key_matches(await_key: Option<&str>, event_key: Option<&str>) -> bool {
+    await_key.is_none() || await_key == event_key
+}
+
 fn validate_event_kind(kind: &str) -> Result<()> {
     if kind.is_empty()
         || kind.len() > 128
@@ -587,6 +609,17 @@ fn validate_topics(topics: &[String]) -> Result<()> {
         }
         let kind = topic.strip_suffix(".*").unwrap_or(topic);
         validate_event_kind(kind)?;
+    }
+    Ok(())
+}
+
+fn validate_key(key: Option<&str>) -> Result<()> {
+    if let Some(key) = key
+        && (key.is_empty()
+            || key.len() > 256
+            || key.chars().any(|ch| matches!(ch, '\r' | '\n' | '\0')))
+    {
+        bail!("invalid event key");
     }
     Ok(())
 }
@@ -786,12 +819,25 @@ fn print_value(value: Value) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn test_event(kind: &str, key: Option<&str>, seq: u64) -> EventEnvelope {
+        EventEnvelope {
+            schema: EVENT_SCHEMA.to_string(),
+            seq,
+            id: format!("ev-{seq}"),
+            kind: kind.to_string(),
+            key: key.map(str::to_string),
+            payload: Value::Null,
+            created_at: "now".to_string(),
+        }
+    }
+
     fn waiting_spec() -> AwaitSpec {
         AwaitSpec {
             schema: AWAIT_SCHEMA.to_string(),
             id: "worker_wait".to_string(),
             owner: "/root".to_string(),
             topics: vec!["agent.*".to_string()],
+            key: None,
             after_seq: 7,
             state: "waiting".to_string(),
             matched_event_id: None,
@@ -824,13 +870,145 @@ mod tests {
             &spec,
             "/root",
             &["agent.*".to_string()],
+            None,
             7
         ));
         assert!(!same_await_registration(
             &spec,
             "/root",
             &["build.*".to_string()],
+            None,
             7
         ));
+    }
+
+    #[test]
+    fn keyed_await_matches_only_the_same_event_key() {
+        assert!(event_key_matches(Some("worker-1"), Some("worker-1")));
+        assert!(!event_key_matches(Some("worker-1"), Some("worker-2")));
+        assert!(!event_key_matches(Some("worker-1"), None));
+        assert!(event_key_matches(None, Some("worker-2")));
+    }
+
+    #[test]
+    fn legacy_awaits_default_to_unkeyed_matching() {
+        let value = serde_json::json!({
+            "schema": AWAIT_SCHEMA,
+            "id": "worker_wait",
+            "owner": "/root",
+            "topics": ["agent.*"],
+            "after_seq": 7,
+            "state": "waiting",
+            "matched_event_id": null,
+            "created_at": "old",
+            "updated_at": "old"
+        });
+        let spec: AwaitSpec = serde_json::from_value(value).expect("legacy await should load");
+        assert_eq!(spec.key, None);
+    }
+
+    #[test]
+    fn keyed_await_reconciles_events_before_and_after_registration() {
+        let temp = tempfile::tempdir().expect("create supervisor state");
+        let root = temp.path();
+        ensure_state_dirs(root).expect("create state directories");
+
+        publish_event(
+            root,
+            "agent.completed".to_string(),
+            Some("worker-1".to_string()),
+            Value::Null,
+        )
+        .expect("publish event");
+        let before = register_await(
+            root,
+            "before".to_string(),
+            "/root".to_string(),
+            vec!["agent.completed".to_string()],
+            Some("worker-1".to_string()),
+            0,
+        )
+        .expect("register await");
+        assert_eq!(before["state"], "fired");
+
+        let after = register_await(
+            root,
+            "after".to_string(),
+            "/root".to_string(),
+            vec!["agent.completed".to_string()],
+            Some("worker-2".to_string()),
+            1,
+        )
+        .expect("register await");
+        assert_eq!(after["state"], "waiting");
+        let published = publish_event(
+            root,
+            "agent.completed".to_string(),
+            Some("worker-2".to_string()),
+            Value::Null,
+        )
+        .expect("publish event");
+        assert_eq!(published["matched_awaits"], json!(["after"]));
+    }
+
+    #[test]
+    fn keyed_awaits_isolate_wrong_keys_and_suppress_duplicate_delivery() {
+        let temp = tempfile::tempdir().expect("create supervisor state");
+        let root = temp.path();
+        ensure_state_dirs(root).expect("create state directories");
+        register_await(
+            root,
+            "wait".to_string(),
+            "/root".to_string(),
+            vec!["agent.completed".to_string()],
+            Some("worker-1".to_string()),
+            0,
+        )
+        .expect("register await");
+
+        let wrong = publish_event(
+            root,
+            "agent.completed".to_string(),
+            Some("worker-2".to_string()),
+            Value::Null,
+        )
+        .expect("publish wrong-key event");
+        assert_eq!(wrong["matched_awaits"], json!([]));
+
+        let event = test_event("agent.completed", Some("worker-1"), 2);
+        let mut awaits = load_awaits(root).expect("load awaits");
+        fire_await(root, &mut awaits, "wait", &event).expect("fire await");
+        fire_await(root, &mut awaits, "wait", &event).expect("ignore duplicate fire");
+        let inbox: Vec<InboxRecord> =
+            read_json_lines(&inbox_path(root, "/root")).expect("read inbox");
+        assert_eq!(inbox.len(), 1);
+    }
+
+    #[test]
+    fn restart_reconciliation_fires_a_persisted_keyed_await() {
+        let temp = tempfile::tempdir().expect("create supervisor state");
+        let root = temp.path();
+        ensure_state_dirs(root).expect("create state directories");
+        let registered = register_await(
+            root,
+            "restart".to_string(),
+            "/root".to_string(),
+            vec!["agent.completed".to_string()],
+            Some("worker-1".to_string()),
+            0,
+        )
+        .expect("register await");
+        assert_eq!(registered["state"], "waiting");
+
+        append_json_line(
+            &events_path(root),
+            &test_event("agent.completed", Some("worker-1"), 1),
+        )
+        .expect("persist event");
+        reconcile_waiting_awaits(root).expect("reconcile after restart");
+
+        let awaits = load_awaits(root).expect("load reconciled awaits");
+        assert_eq!(awaits["restart"].state, "fired");
+        assert_eq!(awaits["restart"].matched_event_id.as_deref(), Some("ev-1"));
     }
 }
