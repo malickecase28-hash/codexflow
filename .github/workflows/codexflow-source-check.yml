@@ -50,6 +50,9 @@ jobs:
       - name: Check CodexFlow runtime binaries
         run: cargo check -p codex-cli --bin codexflow --bin codexflow-supervisor
 
+      - name: Run CodexFlow supervisor durability tests
+        run: cargo test -p codex-cli --bin codexflow-supervisor
+
       - name: Run wait-agent event behavior tests
         run: cargo test -p codex-core 'multi_agents_v2::wait::tests::'
 
