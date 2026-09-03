@@ -867,7 +867,7 @@ fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema
         (
             "until_event".to_string(),
             JsonSchema::boolean(Some(
-                "Wait until activity arrives instead of using a timeout. Omit or set false for bounded waiting; timeout_ms is ignored when true."
+                "Wait until activity arrives instead of using a timeout. Omit or set false for bounded waiting; do not provide timeout_ms when true."
                     .to_string(),
             )),
         ),

@@ -54,7 +54,12 @@ impl Handler {
         let max_timeout_ms = turn.config.multi_agent_v2.max_wait_timeout_ms;
         let default_timeout_ms = turn.config.multi_agent_v2.default_wait_timeout_ms;
         let suspend_until_event = args.until_event.unwrap_or(false);
-        let requested_timeout_ms = (!suspend_until_event).then_some(args.timeout_ms).flatten();
+        if suspend_until_event && args.timeout_ms.is_some() {
+            return Err(FunctionCallError::RespondToModel(
+                "timeout_ms cannot be combined with until_event=true".to_string(),
+            ));
+        }
+        let requested_timeout_ms = args.timeout_ms;
         let timeout_ms = match requested_timeout_ms {
             Some(ms) if ms > max_timeout_ms => {
                 return Err(FunctionCallError::RespondToModel(format!(

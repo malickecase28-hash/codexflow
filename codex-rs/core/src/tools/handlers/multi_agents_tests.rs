@@ -2934,10 +2934,7 @@ async fn multi_agent_v2_wait_agent_until_event_does_not_timeout_or_repoll() {
                     session,
                     turn,
                     "wait_agent",
-                    function_payload(json!({
-                        "timeout_ms": 1_001,
-                        "until_event": true
-                    })),
+                    function_payload(json!({"until_event": true})),
                 ))
                 .await
         }
@@ -3185,6 +3182,31 @@ async fn multi_agent_v2_wait_agent_rejects_timeout_above_configured_max() {
     assert_eq!(
         err,
         FunctionCallError::RespondToModel("timeout_ms must be at most 50".to_string())
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_wait_agent_rejects_timeout_with_until_event() {
+    let (session, turn) = make_session_and_context().await;
+    let Err(err) = WaitAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "wait_agent",
+            function_payload(json!({
+                "timeout_ms": 1,
+                "until_event": true
+            })),
+        ))
+        .await
+    else {
+        panic!("timeout and until_event should be mutually exclusive");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "timeout_ms cannot be combined with until_event=true".to_string()
+        )
     );
 }
 
