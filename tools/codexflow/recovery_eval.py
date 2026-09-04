@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 FAILURES = {
@@ -126,6 +127,19 @@ def history(binary: Path, env: dict[str, str], root: Path) -> list[dict[str, obj
     return value
 
 
+def report(env: dict[str, str], root: Path) -> dict[str, object]:
+    report_script = Path(__file__).resolve().with_name("recovery_report.py")
+    completed = run(
+        [sys.executable, str(report_script), "--project-root", str(root)],
+        env,
+        root,
+    )
+    value = json.loads(completed.stdout)
+    if not isinstance(value, dict):
+        raise AssertionError(f"recovery report returned {type(value).__name__}, expected object")
+    return value
+
+
 def assert_equal(actual: object, expected: object, label: str) -> None:
     if actual != expected:
         raise AssertionError(f"{label}: expected {expected!r}, got {actual!r}")
@@ -197,6 +211,34 @@ def main() -> int:
         assert_equal(final_decision.get("failure_class"), "reasoning", "history.last.failure_class")
         assert_equal(final_decision.get("next_profile"), "critical", "history.last.next_profile")
 
+        metrics = report(env, root)
+        assert_equal(metrics.get("schema"), "codexflow.recovery-report.v1", "report.schema")
+        assert_equal(metrics.get("records"), 11, "report.records")
+        assert_equal(metrics.get("retry_allowed"), 8, "report.retry_allowed")
+        assert_equal(metrics.get("retry_blocked"), 3, "report.retry_blocked")
+        assert_equal(metrics.get("strategy_changes"), 8, "report.strategy_changes")
+        assert_equal(metrics.get("retrieval_expansions"), 2, "report.retrieval_expansions")
+        assert_equal(metrics.get("rollback_recommendations"), 1, "report.rollback_recommendations")
+        assert_equal(metrics.get("human_gates"), 3, "report.human_gates")
+        assert_equal(metrics.get("escalations"), 8, "report.escalations")
+        assert_equal(
+            metrics.get("profile_transitions"),
+            {"deep->critical": 1, "fast->balanced": 7, "fast->fast": 3},
+            "report.profile_transitions",
+        )
+        assert_equal(
+            metrics.get("verification_depth_counts"),
+            {"exhaustive": 1, "focused": 3, "standard": 7},
+            "report.verification_depth_counts",
+        )
+        failure_counts = metrics.get("failure_counts")
+        if not isinstance(failure_counts, dict):
+            raise AssertionError("report.failure_counts is not an object")
+        assert_equal(failure_counts.get("reasoning"), 2, "report.failure_counts.reasoning")
+        for failure in FAILURES:
+            expected = 2 if failure == "reasoning" else 1
+            assert_equal(failure_counts.get(failure), expected, f"report.failure_counts.{failure}")
+
         invalid = subprocess.run(
             [
                 str(binary),
@@ -216,14 +258,16 @@ def main() -> int:
         if invalid.returncode == 0:
             raise AssertionError("unknown failure class unexpectedly succeeded")
         assert_equal(len(history(binary, env, root)), len(durable), "history.after_invalid_count")
+        assert_equal(report(env, root).get("records"), 11, "report.after_invalid_records")
 
         summary = {
             "schema": "codexflow.recovery-eval.v1",
-            "cases": len(results) + 3,
-            "passed": len(results) + 3,
+            "cases": len(results) + 4,
+            "passed": len(results) + 4,
             "failure_classes": sorted(results),
             "critical_escalation_verified": True,
             "durable_history_verified": True,
+            "deterministic_metrics_verified": True,
             "invalid_failure_rejected_without_record": True,
         }
         print(json.dumps(summary, indent=2, sort_keys=True))
