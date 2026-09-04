@@ -1,3 +1,5 @@
+mod recovery_ledger;
+
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
@@ -50,7 +52,7 @@ enum RoutingCommand {
         #[arg(long)]
         profile: Option<String>,
     },
-    /// Select a deterministic recovery path for a failed attempt.
+    /// Select and durably record a deterministic recovery path for a failed attempt.
     Recover {
         /// Failure class: retrieval, tool_selection, invalid_arguments,
         /// missing_dependency, context_insufficiency, reasoning, test,
@@ -63,9 +65,14 @@ enum RoutingCommand {
         /// Current adaptive route profile. Defaults to balanced.
         #[arg(long)]
         profile: Option<String>,
-        /// Optional short diagnostic used only for the emitted recovery record.
+        /// Optional short diagnostic preserved in the recovery record.
         #[arg(long)]
         detail: Option<String>,
+    },
+    /// Show the most recent durable recovery records.
+    History {
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
     },
 }
 
@@ -214,7 +221,15 @@ pub fn handle(project_root: &Path, args: RoutingArgs) -> Result<()> {
                 profile.as_deref(),
                 detail,
             )?;
+            recovery_ledger::append(project_root, &decision)?;
             println!("{}", serde_json::to_string_pretty(&decision)?);
+            Ok(())
+        }
+        RoutingCommand::History { limit } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&recovery_ledger::history(project_root, limit)?)?
+            );
             Ok(())
         }
     }
@@ -434,7 +449,14 @@ fn classify_task(task: &str) -> (u32, Vec<String>) {
 
     if contains_any(
         &lower,
-        &["typo", "spelling", "comment", "readme", "docs only", "documentation only"],
+        &[
+            "typo",
+            "spelling",
+            "comment",
+            "readme",
+            "docs only",
+            "documentation only",
+        ],
     ) {
         score = score.saturating_sub(2);
         factors.push("narrow documentation/edit task".to_string());
@@ -501,8 +523,7 @@ fn classify_task(task: &str) -> (u32, Vec<String>) {
         score = score.saturating_add(1);
         factors.push("search or uncertainty requires additional inference".to_string());
     }
-    let word_count = lower.split_whitespace().count();
-    if word_count >= 80 {
+    if lower.split_whitespace().count() >= 80 {
         score = score.saturating_add(1);
         factors.push("large task specification".to_string());
     }
@@ -586,9 +607,7 @@ fn validate_profile(profile: &RouteProfile) -> Result<()> {
     if !["focused", "standard", "deep", "exhaustive"]
         .contains(&profile.verification_depth.as_str())
     {
-        bail!(
-            "verification_depth must be focused, standard, deep, or exhaustive"
-        );
+        bail!("verification_depth must be focused, standard, deep, or exhaustive");
     }
     Ok(())
 }

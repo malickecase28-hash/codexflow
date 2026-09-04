@@ -8,10 +8,12 @@ on:
       - "codexflow/phase3*"
     paths:
       - "codex-rs/**"
+      - "tools/codexflow/**"
       - ".github/workflows/codexflow-source-check.yml"
   pull_request:
     paths:
       - "codex-rs/**"
+      - "tools/codexflow/**"
       - ".github/workflows/codexflow-source-check.yml"
 
 permissions:
@@ -85,6 +87,12 @@ jobs:
 
       - name: Run CodexFlow context and CLI tests
         run: cargo test -p codex-cli --bin codexflow
+
+      - name: Build CodexFlow recovery eval binary
+        run: cargo build -p codex-cli --bin codexflow
+
+      - name: Run failure-aware recovery policy eval
+        run: python3 ../tools/codexflow/recovery_eval.py --bin "$CARGO_TARGET_DIR/debug/codexflow"
 
       - name: Run CodexFlow supervisor durability tests
         run: cargo test -p codex-cli --bin codexflow-supervisor
