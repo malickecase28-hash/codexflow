@@ -8,6 +8,8 @@ mod context_engine;
 mod delivery;
 #[path = "codexflow/orchestrator.rs"]
 mod orchestrator;
+#[path = "codexflow/routing.rs"]
+mod routing;
 #[path = "codexflow/runtime.rs"]
 mod runtime_state;
 
@@ -109,6 +111,7 @@ enum TopCommand {
     Context(context_engine::ContextArgs),
     Build(build_manager::BuildArgs),
     Orchestrate(orchestrator::OrchestrateArgs),
+    Route(routing::RoutingArgs),
     Delivery(delivery::DeliveryArgs),
     Caretaker(caretaker::CaretakerArgs),
 }
@@ -163,6 +166,9 @@ struct RunArgs {
     project: Option<String>,
     #[arg(long)]
     task: Option<String>,
+    /// Override adaptive routing with fast, balanced, deep, or critical.
+    #[arg(long)]
+    route: Option<String>,
     #[arg(last = true, allow_hyphen_values = true)]
     codex_args: Vec<OsString>,
 }
@@ -204,6 +210,10 @@ async fn main() -> Result<()> {
                     let project = resolve_scoped_project(&runtime, args.project.as_deref()).await?;
                     orchestrator::handle(&primary_root(&project)?, args)
                 }
+                Some(TopCommand::Route(args)) => {
+                    let project = resolve_scoped_project(&runtime, args.project.as_deref()).await?;
+                    routing::handle(&primary_root(&project)?, args)
+                }
                 Some(TopCommand::Delivery(args)) => {
                     let project = resolve_scoped_project(&runtime, args.project.as_deref()).await?;
                     delivery::handle(&primary_root(&project)?, args)
@@ -219,6 +229,7 @@ async fn main() -> Result<()> {
                         RunArgs {
                             project: None,
                             task: None,
+                            route: None,
                             codex_args: Vec::new(),
                         },
                     )
@@ -403,10 +414,20 @@ async fn run_project(runtime: &StateRuntime, args: RunArgs) -> Result<()> {
     let primary_root = primary_root(&project)?;
     let codex = sibling_codex_executable()?;
     let env_task = std::env::var("CODEXFLOW_TASK").ok();
+    let env_route = std::env::var("CODEXFLOW_ROUTE_PROFILE").ok();
     let task = args.task.as_deref().or(env_task.as_deref());
-    let instructions =
-        context_engine::assemble_run_instructions(&primary_root, GOD_INSTRUCTIONS, task, 16_000)?;
+    let route_override = args.route.as_deref().or(env_route.as_deref());
+    let route = routing::resolve_route(&primary_root, task, route_override)?;
+    let route_instructions = routing::render_route_instructions(&route);
+    let base_instructions = format!("{GOD_INSTRUCTIONS}\n\n{route_instructions}");
+    let instructions = context_engine::assemble_run_instructions(
+        &primary_root,
+        &base_instructions,
+        task,
+        route.max_context_chars,
+    )?;
     let encoded_god = serde_json::to_string(&instructions)?;
+    let user_codex_args = args.codex_args;
     let mut command = Command::new(&codex);
     command
         .arg("--profile")
@@ -416,8 +437,10 @@ async fn run_project(runtime: &StateRuntime, args: RunArgs) -> Result<()> {
         .arg("-C")
         .arg(&primary_root)
         .arg("-c")
-        .arg(format!("developer_instructions={encoded_god}"))
-        .args(args.codex_args)
+        .arg(format!("developer_instructions={encoded_god}"));
+    routing::apply_route_to_codex_command(&route, &mut command, &user_codex_args);
+    command
+        .args(user_codex_args)
         .env(PROJECT_ID_ENV, &project.id)
         .env(PROJECT_NAME_ENV, &project.name);
     build_manager::apply_project_build_environment(&primary_root, &mut command)?;
