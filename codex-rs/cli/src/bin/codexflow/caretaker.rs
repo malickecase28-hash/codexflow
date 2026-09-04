@@ -2,6 +2,8 @@ use crate::runtime_state;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+use chrono::SecondsFormat;
+use chrono::Utc;
 use clap::Args;
 use clap::Subcommand;
 use serde::Deserialize;
@@ -9,13 +11,16 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
+use std::fs::OpenOptions;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
 const WORKFLOW_TEMPLATE: &str = include_str!("caretaker-workflow.yml");
+const CHECKPOINT_SCHEMA: &str = "codexflow.checkpoint.v1";
 
 #[derive(Debug, Args)]
 pub struct CaretakerArgs {
@@ -43,6 +48,30 @@ enum CaretakerCommand {
     WorkflowInstall {
         #[arg(long)]
         force: bool,
+    },
+    /// Manage clean, commit-backed recovery points for autonomous work.
+    Checkpoint {
+        #[command(subcommand)]
+        command: CheckpointCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CheckpointCommand {
+    /// Record the current clean commit as a recovery point.
+    Create {
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// List available recovery points.
+    List,
+    /// Show one recovery point.
+    Show { id: String },
+    /// Restore a recovery point. The worktree must be clean and --yes is required.
+    Restore {
+        id: String,
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -93,6 +122,25 @@ struct ScanReport {
     findings: Vec<Finding>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CheckpointRecord {
+    schema: String,
+    id: String,
+    label: Option<String>,
+    created_at: String,
+    branch: String,
+    head: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RestoreReport {
+    checkpoint: String,
+    branch: String,
+    previous_head: String,
+    restored_to: String,
+    safety_ref: Option<String>,
+}
+
 pub fn handle(project_root: &Path, args: CaretakerArgs) -> Result<()> {
     match args.command {
         CaretakerCommand::Init { force } => init(project_root, force),
@@ -114,10 +162,37 @@ pub fn handle(project_root: &Path, args: CaretakerArgs) -> Result<()> {
         }
         CaretakerCommand::Queue { apply } => queue(project_root, apply),
         CaretakerCommand::WorkflowInstall { force } => install_workflow(project_root, force),
+        CaretakerCommand::Checkpoint { command } => handle_checkpoint(project_root, command),
+    }
+}
+
+fn handle_checkpoint(project_root: &Path, command: CheckpointCommand) -> Result<()> {
+    match command {
+        CheckpointCommand::Create { label } => {
+            let record = create_checkpoint(project_root, label)?;
+            println!("{}", serde_json::to_string_pretty(&record)?);
+            Ok(())
+        }
+        CheckpointCommand::List => {
+            let records = list_checkpoints(project_root)?;
+            println!("{}", serde_json::to_string_pretty(&records)?);
+            Ok(())
+        }
+        CheckpointCommand::Show { id } => {
+            let record = load_checkpoint(project_root, &id)?;
+            println!("{}", serde_json::to_string_pretty(&record)?);
+            Ok(())
+        }
+        CheckpointCommand::Restore { id, yes } => {
+            let report = restore_checkpoint(project_root, &id, yes)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
     }
 }
 
 fn init(project_root: &Path, force: bool) -> Result<()> {
+    ensure_local_codexflow_exclude(project_root)?;
     let path = policy_path(project_root);
     if path.exists() && !force {
         bail!(
@@ -273,9 +348,229 @@ fn install_workflow(project_root: &Path, force: bool) -> Result<()> {
     Ok(())
 }
 
+fn create_checkpoint(project_root: &Path, label: Option<String>) -> Result<CheckpointRecord> {
+    ensure_local_codexflow_exclude(project_root)?;
+    ensure_git_worktree(project_root)?;
+    ensure_clean_worktree(project_root)?;
+
+    let branch = git_output(project_root, &["symbolic-ref", "--quiet", "--short", "HEAD"])?
+        .trim()
+        .to_string();
+    if branch.is_empty() {
+        bail!("checkpoint creation requires a named branch");
+    }
+    let head = git_output(project_root, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_string();
+    if head.is_empty() {
+        bail!("checkpoint creation requires an existing commit");
+    }
+    let now = Utc::now();
+    let id = format!(
+        "cp-{}-{}",
+        now.timestamp_millis(),
+        head.chars().take(12).collect::<String>()
+    );
+    let record = CheckpointRecord {
+        schema: CHECKPOINT_SCHEMA.to_string(),
+        id: id.clone(),
+        label: label.filter(|value| !value.trim().is_empty()),
+        created_at: now.to_rfc3339_opts(SecondsFormat::Millis, true),
+        branch,
+        head,
+    };
+    let path = checkpoint_path(project_root, &id)?;
+    atomic_write_json(&path, &record)?;
+    Ok(record)
+}
+
+fn list_checkpoints(project_root: &Path) -> Result<Vec<CheckpointRecord>> {
+    let dir = checkpoint_dir(project_root);
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut records = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("read {}", dir.display()))? {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        if !entry.path().is_file()
+            || entry.path().extension().and_then(|value| value.to_str()) != Some("json")
+        {
+            continue;
+        }
+        let data = match fs::read_to_string(entry.path()) {
+            Ok(data) => data,
+            Err(_) => continue,
+        };
+        let record = match serde_json::from_str::<CheckpointRecord>(&data) {
+            Ok(record) if record.schema == CHECKPOINT_SCHEMA => record,
+            _ => continue,
+        };
+        records.push(record);
+    }
+    records.sort_by(|left, right| {
+        right
+            .created_at
+            .cmp(&left.created_at)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    Ok(records)
+}
+
+fn load_checkpoint(project_root: &Path, id: &str) -> Result<CheckpointRecord> {
+    let path = checkpoint_path(project_root, id)?;
+    let data = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    let record: CheckpointRecord =
+        serde_json::from_str(&data).with_context(|| format!("parse {}", path.display()))?;
+    if record.schema != CHECKPOINT_SCHEMA || record.id != id {
+        bail!("checkpoint metadata is invalid for {id}");
+    }
+    Ok(record)
+}
+
+fn restore_checkpoint(project_root: &Path, id: &str, yes: bool) -> Result<RestoreReport> {
+    if !yes {
+        bail!("checkpoint restore moves the current branch; rerun with --yes after reviewing the checkpoint");
+    }
+    ensure_local_codexflow_exclude(project_root)?;
+    ensure_git_worktree(project_root)?;
+    let checkpoint = load_checkpoint(project_root, id)?;
+    ensure_clean_worktree(project_root)?;
+
+    let branch = git_output(project_root, &["symbolic-ref", "--quiet", "--short", "HEAD"])?
+        .trim()
+        .to_string();
+    if branch != checkpoint.branch {
+        bail!(
+            "checkpoint belongs to branch {}, but current branch is {}; switch branches before restore",
+            checkpoint.branch,
+            branch
+        );
+    }
+
+    let verify = format!("{}^{{commit}}", checkpoint.head);
+    let _ = git_output(project_root, &["rev-parse", "--verify", &verify])?;
+    let previous_head = git_output(project_root, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_string();
+    if previous_head == checkpoint.head {
+        return Ok(RestoreReport {
+            checkpoint: checkpoint.id,
+            branch,
+            previous_head: previous_head.clone(),
+            restored_to: checkpoint.head,
+            safety_ref: None,
+        });
+    }
+
+    ensure_clean_worktree(project_root)?;
+    let safety_ref = format!(
+        "refs/codexflow/safety/{}-{}",
+        Utc::now().timestamp_millis(),
+        previous_head.chars().take(12).collect::<String>()
+    );
+    let _ = git_output(
+        project_root,
+        &["update-ref", &safety_ref, &previous_head],
+    )?;
+    let _ = git_output(project_root, &["reset", "--hard", &checkpoint.head])?;
+
+    Ok(RestoreReport {
+        checkpoint: checkpoint.id,
+        branch,
+        previous_head,
+        restored_to: checkpoint.head,
+        safety_ref: Some(safety_ref),
+    })
+}
+
+fn ensure_git_worktree(project_root: &Path) -> Result<()> {
+    let inside = git_output(project_root, &["rev-parse", "--is-inside-work-tree"])?;
+    if inside.trim() != "true" {
+        bail!("checkpoint operations require a Git worktree");
+    }
+    Ok(())
+}
+
+fn ensure_clean_worktree(project_root: &Path) -> Result<()> {
+    let status = git_output(
+        project_root,
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+    )?;
+    if !status.trim().is_empty() {
+        bail!("checkpoint operation is blocked by a dirty worktree; commit, stash, or isolate current changes first");
+    }
+    Ok(())
+}
+
+fn ensure_local_codexflow_exclude(project_root: &Path) -> Result<()> {
+    ensure_git_worktree(project_root)?;
+    let raw = git_output(project_root, &["rev-parse", "--git-path", "info/exclude"])?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        bail!("Git did not return an info/exclude path");
+    }
+    let path = PathBuf::from(raw);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        project_root.join(path)
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let existing = fs::read_to_string(&path).unwrap_or_default();
+    if existing
+        .lines()
+        .map(str::trim)
+        .any(|line| matches!(line, ".codexflow/" | "/.codexflow/"))
+    {
+        return Ok(());
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("open {}", path.display()))?;
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        writeln!(file)?;
+    }
+    writeln!(file, "/.codexflow/")?;
+    Ok(())
+}
+
+fn checkpoint_dir(project_root: &Path) -> PathBuf {
+    project_root.join(".codexflow").join("checkpoints")
+}
+
+fn checkpoint_path(project_root: &Path, id: &str) -> Result<PathBuf> {
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        bail!("invalid checkpoint id");
+    }
+    Ok(checkpoint_dir(project_root).join(format!("{id}.json")))
+}
+
+fn atomic_write_json(path: &Path, value: &impl Serialize) -> Result<()> {
+    fs::create_dir_all(path.parent().context("checkpoint parent")?)?;
+    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+    fs::write(&tmp, serde_json::to_vec_pretty(value)?)
+        .with_context(|| format!("write {}", tmp.display()))?;
+    if cfg!(windows) && path.exists() {
+        fs::remove_file(path).with_context(|| format!("remove {}", path.display()))?;
+    }
+    fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))
+}
+
 fn policy_path(project_root: &Path) -> PathBuf {
     project_root.join(".codexflow").join("caretaker.json")
 }
+
 fn load_policy(project_root: &Path) -> Result<CaretakerPolicy> {
     let path = policy_path(project_root);
     if !path.exists() {
@@ -325,6 +620,7 @@ fn print_human(report: &ScanReport) {
         }
     }
 }
+
 fn git_output(project_root: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .current_dir(project_root)
@@ -340,6 +636,7 @@ fn git_output(project_root: &Path, args: &[&str]) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
+
 fn is_source_path(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|value| value.to_str()),
@@ -362,6 +659,7 @@ fn is_source_path(path: &Path) -> bool {
         )
     )
 }
+
 fn is_common_basename(name: &str) -> bool {
     matches!(
         name,
@@ -377,6 +675,7 @@ fn is_common_basename(name: &str) -> bool {
             | "cargo.toml"
     )
 }
+
 fn has_rust_project(project_root: &Path) -> bool {
     if project_root.join("Cargo.toml").is_file() {
         return true;
@@ -385,9 +684,10 @@ fn has_rust_project(project_root: &Path) -> bool {
         .ok()
         .into_iter()
         .flatten()
-        .filter_map(Result::ok)
+        .filter_map(|entry| entry.ok())
         .any(|entry| entry.path().is_dir() && entry.path().join("Cargo.toml").is_file())
 }
+
 fn risk_rank(risk: &str) -> u8 {
     match risk {
         "critical" => 4,
@@ -395,5 +695,76 @@ fn risk_rank(risk: &str) -> u8 {
         "medium" => 2,
         "low" => 1,
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checkpoint_restore_creates_safety_ref_and_returns_to_verified_commit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        init_repo(temp.path());
+        fs::write(temp.path().join("state.txt"), "v1\n").expect("v1");
+        commit_all(temp.path(), "v1");
+        let checkpoint = create_checkpoint(temp.path(), Some("known good".to_string()))
+            .expect("checkpoint");
+
+        fs::write(temp.path().join("state.txt"), "v2\n").expect("v2");
+        commit_all(temp.path(), "v2");
+        let second_head = git_output(temp.path(), &["rev-parse", "HEAD"])
+            .expect("head")
+            .trim()
+            .to_string();
+
+        let report = restore_checkpoint(temp.path(), &checkpoint.id, true).expect("restore");
+        assert_eq!(report.previous_head, second_head);
+        assert_eq!(report.restored_to, checkpoint.head);
+        assert_eq!(
+            fs::read_to_string(temp.path().join("state.txt")).expect("state"),
+            "v1\n"
+        );
+        let safety_ref = report.safety_ref.expect("safety ref");
+        assert_eq!(
+            git_output(temp.path(), &["rev-parse", &safety_ref])
+                .expect("safety head")
+                .trim(),
+            second_head
+        );
+    }
+
+    #[test]
+    fn checkpoint_restore_refuses_dirty_worktree() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        init_repo(temp.path());
+        fs::write(temp.path().join("state.txt"), "v1\n").expect("v1");
+        commit_all(temp.path(), "v1");
+        let checkpoint = create_checkpoint(temp.path(), None).expect("checkpoint");
+        fs::write(temp.path().join("state.txt"), "local edit\n").expect("edit");
+
+        let error = restore_checkpoint(temp.path(), &checkpoint.id, true)
+            .expect_err("dirty restore must fail");
+        assert!(error.to_string().contains("dirty worktree"));
+    }
+
+    fn init_repo(root: &Path) {
+        run_git(root, &["init", "-q"]);
+        run_git(root, &["config", "user.email", "codexflow@example.invalid"]);
+        run_git(root, &["config", "user.name", "CodexFlow Test"]);
+    }
+
+    fn commit_all(root: &Path, message: &str) {
+        run_git(root, &["add", "-A"]);
+        run_git(root, &["commit", "-q", "-m", message]);
+    }
+
+    fn run_git(root: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .current_dir(root)
+            .args(args)
+            .status()
+            .expect("git command");
+        assert!(status.success(), "git command failed: {args:?}");
     }
 }
