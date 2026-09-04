@@ -8,31 +8,24 @@ use serde_json::Value;
 use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
-use std::io::Seek;
-use std::io::SeekFrom;
+use std::fs::TryLockError;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
-use std::time::SystemTime;
 
 const RECOVERY_EVENT_SCHEMA: &str = "codexflow.recovery-event.v1";
-const LOCK_STALE_AFTER: Duration = Duration::from_secs(120);
 const LOCK_TIMEOUT: Duration = Duration::from_secs(8);
 const LOCK_RETRY_DELAY: Duration = Duration::from_millis(25);
 const MAX_HISTORY_LIMIT: usize = 1_000;
-static LOCK_TOKEN_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub(super) fn append(project_root: &Path, decision: &RecoveryDecision) -> Result<()> {
     let state_dir = recovery_state_dir(project_root);
     fs::create_dir_all(&state_dir)
         .with_context(|| format!("create {}", state_dir.display()))?;
-    let mut guard = RecoveryLock::acquire(&state_dir)?;
-    guard.refresh_and_assert_owned()?;
+    let _guard = RecoveryLock::acquire(&state_dir)?;
 
     let event = serde_json::json!({
         "schema": RECOVERY_EVENT_SCHEMA,
@@ -64,8 +57,7 @@ pub(super) fn history(project_root: &Path, limit: usize) -> Result<Vec<Value>> {
     let state_dir = recovery_state_dir(project_root);
     fs::create_dir_all(&state_dir)
         .with_context(|| format!("create {}", state_dir.display()))?;
-    let mut guard = RecoveryLock::acquire(&state_dir)?;
-    guard.refresh_and_assert_owned()?;
+    let _guard = RecoveryLock::acquire(&state_dir)?;
 
     let path = recovery_history_path(project_root);
     if !path.exists() {
@@ -163,156 +155,55 @@ fn recovery_history_path(project_root: &Path) -> PathBuf {
 }
 
 struct RecoveryLock {
-    path: PathBuf,
-    file: File,
-    token: String,
+    _file: File,
 }
 
 impl RecoveryLock {
     fn acquire(state_dir: &Path) -> Result<Self> {
         let path = state_dir.join(".recovery.lock");
-        let token = format!(
-            "{}-{}-{}",
-            std::process::id(),
-            Utc::now().timestamp_micros(),
-            LOCK_TOKEN_COUNTER.fetch_add(1, Ordering::Relaxed)
-        );
-        let started = Instant::now();
+        if path.is_dir() {
+            bail!(
+                "legacy recovery lock directory {}; remove it after confirming no older CodexFlow process is active",
+                path.display()
+            );
+        }
 
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&path)
+            .with_context(|| format!("open recovery lock {}", path.display()))?;
+        let started = Instant::now();
         loop {
-            match OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(mut file) => {
-                    file.write_all(token.as_bytes())
-                        .with_context(|| format!("initialize recovery lock {}", path.display()))?;
+            match file.try_lock() {
+                Ok(()) => {
+                    file.set_len(0)
+                        .with_context(|| format!("truncate recovery lock {}", path.display()))?;
+                    writeln!(
+                        file,
+                        "pid={} acquired_at={}",
+                        std::process::id(),
+                        Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+                    )
+                    .with_context(|| format!("write recovery lock {}", path.display()))?;
                     file.sync_data()
                         .with_context(|| format!("sync recovery lock {}", path.display()))?;
-                    return Ok(Self {
-                        path,
-                        file,
-                        token: token.clone(),
-                    });
+                    return Ok(Self { _file: file });
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if path.is_dir() {
-                        if lock_is_stale(&path) {
-                            bail!(
-                                "stale legacy recovery lock {}; remove it manually after confirming no older CodexFlow process is active",
-                                path.display()
-                            );
-                        }
-                    } else if try_reap_stale_lock(&path)? {
-                        continue;
-                    }
+                Err(TryLockError::WouldBlock) => {
                     if started.elapsed() >= LOCK_TIMEOUT {
                         bail!("timed out waiting for recovery lock {}", path.display());
                     }
                     thread::sleep(LOCK_RETRY_DELAY);
                 }
-                Err(error) => {
+                Err(TryLockError::Error(error)) => {
                     return Err(error)
-                        .with_context(|| format!("create recovery lock {}", path.display()));
+                        .with_context(|| format!("lock recovery state {}", path.display()));
                 }
             }
         }
     }
-
-    fn refresh_and_assert_owned(&mut self) -> Result<()> {
-        self.file
-            .seek(SeekFrom::Start(0))
-            .with_context(|| format!("seek recovery lock {}", self.path.display()))?;
-        self.file
-            .set_len(0)
-            .with_context(|| format!("truncate recovery lock {}", self.path.display()))?;
-        self.file
-            .write_all(self.token.as_bytes())
-            .with_context(|| format!("refresh recovery lock {}", self.path.display()))?;
-        self.file
-            .sync_data()
-            .with_context(|| format!("sync recovery lock {}", self.path.display()))?;
-
-        let current = fs::read_to_string(&self.path)
-            .with_context(|| format!("verify recovery lock {}", self.path.display()))?;
-        if current != self.token {
-            bail!("recovery lock ownership changed for {}", self.path.display());
-        }
-        Ok(())
-    }
-}
-
-impl Drop for RecoveryLock {
-    fn drop(&mut self) {
-        let still_owned = fs::read_to_string(&self.path).is_ok_and(|token| token == self.token);
-        if still_owned {
-            let _ = fs::remove_file(&self.path);
-        }
-    }
-}
-
-fn try_reap_stale_lock(path: &Path) -> Result<bool> {
-    let first_modified = match stale_modified_time(path)? {
-        Some(modified) => modified,
-        None => return Ok(false),
-    };
-    let first_token = match fs::read_to_string(path) {
-        Ok(token) => token,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
-        Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
-    };
-
-    let second_modified = match stale_modified_time(path)? {
-        Some(modified) if modified == first_modified => modified,
-        _ => return Ok(false),
-    };
-    let second_token = match fs::read_to_string(path) {
-        Ok(token) => token,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
-        Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
-    };
-    if second_token != first_token {
-        return Ok(false);
-    }
-
-    let third_modified = match stale_modified_time(path)? {
-        Some(modified) if modified == second_modified => modified,
-        _ => return Ok(false),
-    };
-    if third_modified != first_modified {
-        return Ok(false);
-    }
-
-    match fs::remove_file(path) {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
-        Err(error) => Err(error).with_context(|| format!("remove stale lock {}", path.display())),
-    }
-}
-
-fn stale_modified_time(path: &Path) -> Result<Option<SystemTime>> {
-    let metadata = match fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error).with_context(|| format!("stat {}", path.display())),
-    };
-    let modified = metadata
-        .modified()
-        .with_context(|| format!("read modified time for {}", path.display()))?;
-    let stale = modified
-        .elapsed()
-        .is_ok_and(|elapsed| elapsed >= LOCK_STALE_AFTER);
-    Ok(stale.then_some(modified))
-}
-
-fn lock_is_stale(path: &Path) -> bool {
-    fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|modified| modified.elapsed().ok())
-        .is_some_and(|elapsed| elapsed >= LOCK_STALE_AFTER)
 }
 
 #[cfg(test)]
@@ -399,19 +290,20 @@ mod tests {
     }
 
     #[test]
-    fn recovery_lock_drop_preserves_replacement_token() {
+    fn recovery_lock_is_released_when_handle_drops() {
         let temp = tempfile::tempdir().expect("tempdir");
         let state_dir = recovery_state_dir(temp.path());
         fs::create_dir_all(&state_dir).expect("state dir");
         let guard = RecoveryLock::acquire(&state_dir).expect("lock");
-        let path = guard.path.clone();
-        fs::remove_file(&path).expect("simulate replacement");
-        fs::write(&path, "replacement-token").expect("replacement token");
+        let path = state_dir.join(".recovery.lock");
+        let second = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("second handle");
+        assert!(matches!(second.try_lock(), Err(TryLockError::WouldBlock)));
         drop(guard);
-        assert_eq!(
-            fs::read_to_string(&path).expect("replacement survives"),
-            "replacement-token"
-        );
+        second.try_lock().expect("lock is released after drop");
     }
 
     #[test]
