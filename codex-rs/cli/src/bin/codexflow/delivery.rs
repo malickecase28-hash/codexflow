@@ -3,11 +3,14 @@ use anyhow::Result;
 use anyhow::bail;
 use clap::Args;
 use clap::Subcommand;
+use serde::Deserialize;
 use serde::Serialize;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+
+const BUILD_VERIFICATION_SCHEMA: &str = "codexflow.build-verification.v1";
 
 #[derive(Debug, Args)]
 pub struct DeliveryArgs {
@@ -57,7 +60,11 @@ enum DeliveryCommand {
         #[arg(long)]
         watch: bool,
     },
-    MergeCheck,
+    MergeCheck {
+        /// Explicit emergency escape hatch for Rust projects without exact-HEAD local evidence.
+        #[arg(long)]
+        allow_unverified: bool,
+    },
     Merge {
         #[arg(long)]
         yes: bool,
@@ -67,6 +74,9 @@ enum DeliveryCommand {
         method: String,
         #[arg(long)]
         delete_branch: bool,
+        /// Explicit emergency escape hatch for Rust projects without exact-HEAD local evidence.
+        #[arg(long)]
+        allow_unverified: bool,
     },
     Status,
 }
@@ -78,6 +88,15 @@ struct DeliveryStatus {
     dirty: bool,
     git: Option<String>,
     gh: Option<String>,
+    local_verification: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BuildVerificationEvidence {
+    schema: String,
+    git_head: Option<String>,
+    dirty_worktree: Option<bool>,
+    success: bool,
 }
 
 pub fn handle(project_root: &Path, args: DeliveryArgs) -> Result<()> {
@@ -117,13 +136,23 @@ pub fn handle(project_root: &Path, args: DeliveryArgs) -> Result<()> {
             draft,
         ),
         DeliveryCommand::PrChecks { watch } => pr_checks(project_root, watch),
-        DeliveryCommand::MergeCheck => merge_check(project_root),
+        DeliveryCommand::MergeCheck { allow_unverified } => {
+            merge_check(project_root, allow_unverified)
+        }
         DeliveryCommand::Merge {
             yes,
             auto,
             method,
             delete_branch,
-        } => merge(project_root, yes, auto, &method, delete_branch),
+            allow_unverified,
+        } => merge(
+            project_root,
+            yes,
+            auto,
+            &method,
+            delete_branch,
+            allow_unverified,
+        ),
     }
 }
 
@@ -133,6 +162,11 @@ fn status(project_root: &Path) -> Result<()> {
     let dirty = !git_output(project_root, &["status", "--porcelain"])?
         .trim()
         .is_empty();
+    let local_verification = if has_rust_project(project_root) {
+        matching_local_verification(project_root)?.map(|path| path.display().to_string())
+    } else {
+        None
+    };
     let report = DeliveryStatus {
         project_root: project_root.display().to_string(),
         branch: branch.trim().to_string(),
@@ -143,6 +177,7 @@ fn status(project_root: &Path) -> Result<()> {
         gh: which::which("gh")
             .ok()
             .map(|path| path.display().to_string()),
+        local_verification,
     };
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
@@ -279,9 +314,18 @@ fn pr_checks(project_root: &Path, watch: bool) -> Result<()> {
     Ok(())
 }
 
-fn merge_check(project_root: &Path) -> Result<()> {
+fn merge_check(project_root: &Path, allow_unverified: bool) -> Result<()> {
     require_gh()?;
     ensure_clean_commit_state(project_root)?;
+    if has_rust_project(project_root) && !allow_unverified {
+        let evidence = matching_local_verification(project_root)?.with_context(|| {
+            format!(
+                "merge blocked: no successful clean local Rust verification evidence matches HEAD {}; run `codexflow build verify` after committing, or use --allow-unverified only as an explicit emergency override",
+                current_head(project_root).unwrap_or_else(|_| "<unknown>".to_string())
+            )
+        })?;
+        eprintln!("CodexFlow local verification: {}", evidence.display());
+    }
     let status = Command::new("gh")
         .current_dir(project_root)
         .args(["pr", "checks", "--required"])
@@ -313,6 +357,7 @@ fn merge(
     auto: bool,
     method: &str,
     delete_branch: bool,
+    allow_unverified: bool,
 ) -> Result<()> {
     if !yes {
         bail!("merge requires --yes");
@@ -320,7 +365,7 @@ fn merge(
     if !["merge", "squash", "rebase"].contains(&method) {
         bail!("merge method must be merge, squash, or rebase");
     }
-    merge_check(project_root)?;
+    merge_check(project_root, allow_unverified)?;
     let mut command = Command::new("gh");
     command
         .current_dir(project_root)
@@ -337,6 +382,63 @@ fn merge(
         bail!("gh pr merge failed with {status}");
     }
     Ok(())
+}
+
+fn matching_local_verification(project_root: &Path) -> Result<Option<PathBuf>> {
+    let head = current_head(project_root)?;
+    let dir = project_root
+        .join(".codexflow")
+        .join("evidence")
+        .join("build");
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+    let mut paths = fs::read_dir(&dir)
+        .with_context(|| format!("read {}", dir.display()))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file() && path.extension().and_then(|value| value.to_str()) == Some("json")
+        })
+        .collect::<Vec<_>>();
+    paths.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+
+    for path in paths {
+        let data = match fs::read_to_string(&path) {
+            Ok(data) => data,
+            Err(_) => continue,
+        };
+        let evidence = match serde_json::from_str::<BuildVerificationEvidence>(&data) {
+            Ok(evidence) => evidence,
+            Err(_) => continue,
+        };
+        if evidence.schema == BUILD_VERIFICATION_SCHEMA
+            && evidence.success
+            && evidence.git_head.as_deref() == Some(head.as_str())
+            && evidence.dirty_worktree == Some(false)
+        {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+fn current_head(project_root: &Path) -> Result<String> {
+    Ok(git_output(project_root, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_string())
+}
+
+fn has_rust_project(project_root: &Path) -> bool {
+    if project_root.join("Cargo.toml").is_file() {
+        return true;
+    }
+    fs::read_dir(project_root)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .any(|entry| entry.path().is_dir() && entry.path().join("Cargo.toml").is_file())
 }
 
 fn ensure_clean_commit_state(project_root: &Path) -> Result<()> {
@@ -374,10 +476,12 @@ fn ensure_git_repo(project_root: &Path) -> Result<()> {
     }
     Ok(())
 }
+
 fn require_gh() -> Result<()> {
     which::which("gh").context("GitHub CLI `gh` is required for pull-request operations")?;
     Ok(())
 }
+
 fn git_output(project_root: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .current_dir(project_root)
@@ -393,6 +497,7 @@ fn git_output(project_root: &Path, args: &[&str]) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
+
 fn run_git(project_root: &Path, args: &[&str]) -> Result<()> {
     let status = Command::new("git")
         .current_dir(project_root)
@@ -404,6 +509,7 @@ fn run_git(project_root: &Path, args: &[&str]) -> Result<()> {
     }
     Ok(())
 }
+
 fn validate_task_id(value: &str) -> Result<()> {
     if value.is_empty()
         || value.len() > 64
@@ -414,4 +520,79 @@ fn validate_task_id(value: &str) -> Result<()> {
         bail!("invalid task id {value:?}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_head_clean_successful_evidence_is_selected() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        init_repo(temp.path());
+        fs::write(temp.path().join("Cargo.toml"), "[workspace]\nmembers=[]\n").expect("manifest");
+        run_git_test(temp.path(), &["add", "Cargo.toml"]);
+        run_git_test(temp.path(), &["commit", "-q", "-m", "initial"]);
+        let head = current_head(temp.path()).expect("head");
+        let dir = temp.path().join(".codexflow/evidence/build");
+        fs::create_dir_all(&dir).expect("evidence dir");
+        fs::write(
+            dir.join("1.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": BUILD_VERIFICATION_SCHEMA,
+                "git_head": head,
+                "dirty_worktree": false,
+                "success": true
+            }))
+            .expect("serialize"),
+        )
+        .expect("evidence");
+        assert!(
+            matching_local_verification(temp.path())
+                .expect("verification")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn stale_or_dirty_evidence_is_rejected() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        init_repo(temp.path());
+        fs::write(temp.path().join("Cargo.toml"), "[workspace]\nmembers=[]\n").expect("manifest");
+        run_git_test(temp.path(), &["add", "Cargo.toml"]);
+        run_git_test(temp.path(), &["commit", "-q", "-m", "initial"]);
+        let dir = temp.path().join(".codexflow/evidence/build");
+        fs::create_dir_all(&dir).expect("evidence dir");
+        fs::write(
+            dir.join("1.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": BUILD_VERIFICATION_SCHEMA,
+                "git_head": "0000000000000000000000000000000000000000",
+                "dirty_worktree": true,
+                "success": true
+            }))
+            .expect("serialize"),
+        )
+        .expect("evidence");
+        assert!(
+            matching_local_verification(temp.path())
+                .expect("verification")
+                .is_none()
+        );
+    }
+
+    fn init_repo(root: &Path) {
+        run_git_test(root, &["init", "-q"]);
+        run_git_test(root, &["config", "user.email", "codexflow@example.invalid"]);
+        run_git_test(root, &["config", "user.name", "CodexFlow Test"]);
+    }
+
+    fn run_git_test(root: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .current_dir(root)
+            .args(args)
+            .status()
+            .expect("git command");
+        assert!(status.success(), "git command failed: {args:?}");
+    }
 }
