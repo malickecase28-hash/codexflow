@@ -1,0 +1,33 @@
+{
+  "name": "@malickecase28-hash/codexflow",
+  "version": "0.0.0-dev",
+  "description": "Prebuilt CodexFlow terminal harness and supervisor launcher.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "codexflow": "bin/codexflow.js",
+    "codexflow-supervisor": "bin/codexflow-supervisor.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "scripts/postinstall.mjs",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.mjs",
+    "test": "node scripts/smoke.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/malickecase28-hash/codexflow.git",
+    "directory": "codexflow-npm"
+  },
+  "bugs": {
+    "url": "https://github.com/malickecase28-hash/codexflow/issues"
+  },
+  "homepage": "https://github.com/malickecase28-hash/codexflow"
+}
