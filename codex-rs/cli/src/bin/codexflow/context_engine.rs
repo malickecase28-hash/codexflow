@@ -106,6 +106,15 @@ struct SkillCard {
     score: usize,
 }
 
+#[derive(Debug, Default)]
+struct ScanSummary {
+    top_level: BTreeSet<String>,
+    manifests: BTreeSet<String>,
+    languages: BTreeMap<String, usize>,
+    file_count: usize,
+    truncated: bool,
+}
+
 pub fn handle(project_root: &Path, args: ContextArgs) -> Result<()> {
     match args.command {
         ContextCommand::Snapshot { refresh } => {
@@ -315,11 +324,67 @@ fn load_snapshot(project_root: &Path, refresh: bool) -> Result<ProjectSnapshot> 
 }
 
 fn scan_project(project_root: &Path) -> Result<ProjectSnapshot> {
-    let mut languages = BTreeMap::new();
-    let mut manifests = Vec::new();
-    let mut top_level = Vec::new();
-    let mut file_count = 0usize;
+    let summary = if let Some((paths, truncated)) = git_project_paths(project_root) {
+        summarize_paths(paths.iter().map(String::as_str), truncated)
+    } else {
+        scan_filesystem(project_root)?
+    };
+
+    Ok(ProjectSnapshot {
+        schema: SNAPSHOT_SCHEMA.to_string(),
+        root: project_root.display().to_string(),
+        generated_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        git_branch: git_output(project_root, &["branch", "--show-current"]),
+        git_head: git_output(project_root, &["rev-parse", "HEAD"]),
+        dirty_paths: git_dirty_paths(project_root),
+        top_level: summary.top_level.into_iter().collect(),
+        manifests: summary.manifests.into_iter().collect(),
+        languages: summary.languages,
+        file_count: summary.file_count,
+        truncated: summary.truncated,
+    })
+}
+
+fn git_project_paths(project_root: &Path) -> Option<(Vec<String>, bool)> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project_root)
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let mut paths = Vec::with_capacity(output.stdout.len().min(MAX_SCAN_FILES));
     let mut truncated = false;
+    for raw in output.stdout.split(|byte| *byte == 0) {
+        if raw.is_empty() {
+            continue;
+        }
+        if paths.len() >= MAX_SCAN_FILES {
+            truncated = true;
+            break;
+        }
+        let relative = String::from_utf8_lossy(raw).replace('\\', "/");
+        if relative.is_empty() || should_skip_relative_path(&relative) {
+            continue;
+        }
+        paths.push(relative);
+    }
+    paths.sort_unstable();
+    paths.dedup();
+    Some((paths, truncated))
+}
+
+fn scan_filesystem(project_root: &Path) -> Result<ScanSummary> {
+    let mut summary = ScanSummary::default();
     let mut stack = vec![(project_root.to_path_buf(), 0usize)];
 
     while let Some((dir, depth)) = stack.pop() {
@@ -345,68 +410,104 @@ fn scan_project(project_root: &Path) -> Result<ProjectSnapshot> {
                 if should_skip_dir(entry.file_name().as_os_str()) {
                     continue;
                 }
-                if depth == 0 {
-                    top_level.push(format!("{}/", entry.file_name().to_string_lossy()));
-                }
                 stack.push((path, depth + 1));
                 continue;
             }
             if !kind.is_file() {
                 continue;
             }
-            file_count = file_count.saturating_add(1);
-            if file_count > MAX_SCAN_FILES {
-                truncated = true;
+            if summary.file_count >= MAX_SCAN_FILES {
+                summary.truncated = true;
                 break;
             }
             let relative = match path.strip_prefix(project_root) {
                 Ok(value) => normalize_relative(value),
                 Err(_) => continue,
             };
-            if depth == 0 {
-                top_level.push(relative.clone());
-            }
-            if is_manifest(&path) {
-                manifests.push(relative);
-            }
-            if let Some(language) = language_for(&path) {
-                *languages.entry(language.to_string()).or_insert(0) += 1;
-            }
+            record_path(&mut summary, &relative);
         }
-        if truncated {
+        if summary.truncated {
             break;
         }
     }
+    Ok(summary)
+}
 
-    manifests.sort();
-    manifests.dedup();
-    top_level.sort();
-    top_level.dedup();
-
-    Ok(ProjectSnapshot {
-        schema: SNAPSHOT_SCHEMA.to_string(),
-        root: project_root.display().to_string(),
-        generated_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        git_branch: git_output(project_root, &["branch", "--show-current"]),
-        git_head: git_output(project_root, &["rev-parse", "HEAD"]),
-        dirty_paths: git_dirty_paths(project_root),
-        top_level,
-        manifests,
-        languages,
-        file_count: file_count.min(MAX_SCAN_FILES),
+fn summarize_paths<'a>(paths: impl Iterator<Item = &'a str>, truncated: bool) -> ScanSummary {
+    let mut summary = ScanSummary {
         truncated,
-    })
+        ..ScanSummary::default()
+    };
+    for relative in paths {
+        record_path(&mut summary, relative);
+    }
+    summary
+}
+
+fn record_path(summary: &mut ScanSummary, relative: &str) {
+    summary.file_count = summary.file_count.saturating_add(1);
+    if let Some((first, _)) = relative.split_once('/') {
+        summary.top_level.insert(format!("{first}/"));
+    } else {
+        summary.top_level.insert(relative.to_string());
+    }
+    let path = Path::new(relative);
+    if is_manifest(path) {
+        summary.manifests.insert(relative.to_string());
+    }
+    if let Some(language) = language_for(path) {
+        *summary.languages.entry(language.to_string()).or_insert(0) += 1;
+    }
 }
 
 fn build_project_map(project_root: &Path, max_entries: usize) -> Result<ProjectMap> {
     let limit = max_entries.clamp(20, 2_000);
-    let mut entries = Vec::new();
-    let mut truncated = false;
+    if let Some((paths, scan_truncated)) = git_project_paths(project_root) {
+        return Ok(project_map_from_paths(
+            project_root,
+            &paths,
+            limit,
+            scan_truncated,
+        ));
+    }
+    build_project_map_filesystem(project_root, limit)
+}
+
+fn project_map_from_paths(
+    project_root: &Path,
+    paths: &[String],
+    limit: usize,
+    scan_truncated: bool,
+) -> ProjectMap {
+    let mut entries = BTreeSet::new();
+    for relative in paths {
+        let components = relative.split('/').collect::<Vec<_>>();
+        let parent_depth = components.len().saturating_sub(1);
+        for end in 1..=parent_depth.min(5) {
+            entries.insert(format!("{}/", components[..end].join("/")));
+        }
+        if important_map_file(Path::new(relative), parent_depth) {
+            entries.insert(relative.clone());
+        }
+    }
+
+    let truncated = scan_truncated || entries.len() > limit;
+    ProjectMap {
+        schema: "codexflow.project-map.v1",
+        root: project_root.display().to_string(),
+        entries: entries.into_iter().take(limit).collect(),
+        truncated,
+    }
+}
+
+fn build_project_map_filesystem(project_root: &Path, limit: usize) -> Result<ProjectMap> {
+    let mut entries = BTreeSet::new();
+    let mut scan_truncated = false;
     let mut stack = vec![(project_root.to_path_buf(), 0usize)];
 
     while let Some((dir, depth)) = stack.pop() {
-        if depth > 4 || entries.len() >= limit {
-            truncated = true;
+        if depth > 4 {
+            scan_truncated = true;
             continue;
         }
         let read = match fs::read_dir(&dir) {
@@ -432,23 +533,19 @@ fn build_project_map(project_root: &Path, max_entries: usize) -> Result<ProjectM
                 if should_skip_dir(entry.file_name().as_os_str()) {
                     continue;
                 }
-                entries.push(format!("{relative}/"));
+                entries.insert(format!("{relative}/"));
                 stack.push((path, depth + 1));
             } else if kind.is_file() && important_map_file(&path, depth) {
-                entries.push(relative);
-            }
-            if entries.len() >= limit {
-                truncated = true;
-                break;
+                entries.insert(relative);
             }
         }
     }
 
-    entries.sort();
+    let truncated = scan_truncated || entries.len() > limit;
     Ok(ProjectMap {
         schema: "codexflow.project-map.v1",
         root: project_root.display().to_string(),
-        entries,
+        entries: entries.into_iter().take(limit).collect(),
         truncated,
     })
 }
@@ -651,7 +748,10 @@ fn git_output(project_root: &Path, args: &[&str]) -> Option<String> {
 }
 
 fn git_dirty_paths(project_root: &Path) -> Vec<String> {
-    let Some(output) = git_output(project_root, &["status", "--porcelain=v1", "-uno"]) else {
+    let Some(output) = git_output(
+        project_root,
+        &["status", "--porcelain=v1", "--untracked-files=normal"],
+    ) else {
         return Vec::new();
     };
     output
@@ -746,12 +846,17 @@ fn should_skip_dir(name: &OsStr) -> bool {
     should_skip_name(&name)
 }
 
+fn should_skip_relative_path(path: &str) -> bool {
+    path.split('/').any(should_skip_name)
+}
+
 fn should_skip_name(name: &str) -> bool {
     matches!(
         name,
         ".git"
             | ".hg"
             | ".svn"
+            | ".codexflow"
             | "target"
             | "node_modules"
             | ".next"
@@ -841,6 +946,34 @@ mod tests {
     }
 
     #[test]
+    fn git_index_scan_includes_untracked_and_excludes_ignored_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        run_git(temp.path(), &["init", "-q"]);
+        fs::create_dir_all(temp.path().join("src")).expect("src");
+        fs::create_dir_all(temp.path().join("target/generated")).expect("target");
+        fs::write(temp.path().join(".gitignore"), "target/\n").expect("gitignore");
+        fs::write(temp.path().join("src/lib.rs"), "pub fn run() {}").expect("source");
+        fs::write(temp.path().join("scratch.py"), "print('hi')\n").expect("scratch");
+        fs::write(temp.path().join("target/generated/junk.rs"), "fn junk() {}").expect("junk");
+        run_git(temp.path(), &["add", ".gitignore", "src/lib.rs"]);
+
+        let snapshot = scan_project(temp.path()).expect("snapshot");
+        assert_eq!(snapshot.languages.get("rust"), Some(&1));
+        assert_eq!(snapshot.languages.get("python"), Some(&1));
+        assert_eq!(snapshot.file_count, 3);
+        assert!(snapshot.top_level.iter().any(|entry| entry == "src/"));
+        assert!(snapshot.dirty_paths.iter().any(|entry| entry == "scratch.py"));
+
+        let map = build_project_map(temp.path(), 100).expect("map");
+        assert!(map.entries.iter().any(|entry| entry == "scratch.py"));
+        assert!(
+            !map.entries
+                .iter()
+                .any(|entry| entry.starts_with("target/"))
+        );
+    }
+
+    #[test]
     fn skill_scoring_prefers_semantic_matches() {
         let tokens = task_tokens("debug a failing performance regression");
         let strong = SkillCard {
@@ -856,5 +989,15 @@ mod tests {
             score: 0,
         };
         assert!(score_skill(&strong, &tokens) > score_skill(&weak, &tokens));
+    }
+
+    fn run_git(root: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .status()
+            .expect("git command");
+        assert!(status.success(), "git command failed: {args:?}");
     }
 }
