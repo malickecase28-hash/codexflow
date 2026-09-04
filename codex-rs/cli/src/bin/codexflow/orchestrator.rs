@@ -2,14 +2,23 @@ use crate::runtime_state;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+use chrono::SecondsFormat;
+use chrono::Utc;
 use clap::Args;
 use clap::Subcommand;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
+
+const LEASE_SCHEMA: &str = "codexflow.lease.v1";
+const MIN_LEASE_TTL_SECONDS: u64 = 30;
+const MAX_LEASE_TTL_SECONDS: u64 = 86_400;
 
 #[derive(Debug, Args)]
 pub struct OrchestrateArgs {
@@ -45,6 +54,41 @@ enum OrchestrateCommand {
     },
     /// List skill names visible to the deterministic capability resolver.
     Skills,
+    /// Manage atomic TTL ownership leases shared across Git worktrees.
+    Lease {
+        #[command(subcommand)]
+        command: LeaseCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum LeaseCommand {
+    Acquire {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        owner: String,
+        #[arg(long)]
+        task: Option<String>,
+        #[arg(long, default_value_t = 900)]
+        ttl_seconds: u64,
+    },
+    Renew {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        owner: String,
+        #[arg(long, default_value_t = 900)]
+        ttl_seconds: u64,
+    },
+    Release {
+        #[arg(long)]
+        scope: String,
+        #[arg(long)]
+        owner: String,
+    },
+    List,
+    Prune,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +138,7 @@ struct ExecutionPlan {
     schema: &'static str,
     task: String,
     task_id: Option<String>,
+    lease_scope: Option<String>,
     risk: String,
     topology: String,
     selected_departments: Vec<SelectedDepartment>,
@@ -111,6 +156,24 @@ struct SelectedDepartment {
     score: usize,
     role: String,
     model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LeaseRecord {
+    schema: String,
+    scope: String,
+    owner: String,
+    task: Option<String>,
+    acquired_at: String,
+    renewed_at: String,
+    expires_at_ms: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct LeaseView {
+    #[serde(flatten)]
+    lease: LeaseRecord,
+    expired: bool,
 }
 
 pub fn handle(project_root: &Path, args: OrchestrateArgs) -> Result<()> {
@@ -148,6 +211,50 @@ pub fn handle(project_root: &Path, args: OrchestrateArgs) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&skills)?);
             Ok(())
         }
+        OrchestrateCommand::Lease { command } => handle_lease(project_root, command),
+    }
+}
+
+fn handle_lease(project_root: &Path, command: LeaseCommand) -> Result<()> {
+    match command {
+        LeaseCommand::Acquire {
+            scope,
+            owner,
+            task,
+            ttl_seconds,
+        } => {
+            let lease = acquire_lease(project_root, &scope, &owner, task.as_deref(), ttl_seconds)?;
+            println!("{}", serde_json::to_string_pretty(&lease)?);
+            Ok(())
+        }
+        LeaseCommand::Renew {
+            scope,
+            owner,
+            ttl_seconds,
+        } => {
+            let lease = renew_lease(project_root, &scope, &owner, ttl_seconds)?;
+            println!("{}", serde_json::to_string_pretty(&lease)?);
+            Ok(())
+        }
+        LeaseCommand::Release { scope, owner } => {
+            release_lease(project_root, &scope, &owner)?;
+            println!("{scope}");
+            Ok(())
+        }
+        LeaseCommand::List => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&list_leases(project_root)?)?
+            );
+            Ok(())
+        }
+        LeaseCommand::Prune => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&prune_expired_leases(project_root)?)?
+            );
+            Ok(())
+        }
     }
 }
 
@@ -180,6 +287,10 @@ fn plan(
     explicit_risk: Option<String>,
     task_id: Option<String>,
 ) -> Result<ExecutionPlan> {
+    if let Some(id) = task_id.as_deref() {
+        validate_lease_token(id, "task id")?;
+    }
+    let lease_scope = task_id.as_ref().map(|id| format!("task-{id}"));
     let config = load_config(project_root)?;
     let task_lower = task.to_ascii_lowercase();
     let risk = explicit_risk.unwrap_or_else(|| classify_risk(&task_lower));
@@ -250,6 +361,7 @@ fn plan(
         schema: "codexflow.plan.v1",
         task,
         task_id,
+        lease_scope,
         risk,
         topology,
         selected_departments: selected,
@@ -260,6 +372,261 @@ fn plan(
         independent_review,
         reviewer_role: config.reviewer_role,
     })
+}
+
+fn acquire_lease(
+    project_root: &Path,
+    scope: &str,
+    owner: &str,
+    task: Option<&str>,
+    ttl_seconds: u64,
+) -> Result<LeaseRecord> {
+    validate_lease_token(scope, "lease scope")?;
+    validate_lease_token(owner, "lease owner")?;
+    if let Some(task) = task {
+        validate_lease_token(task, "task id")?;
+    }
+    let ttl_seconds = validate_lease_ttl(ttl_seconds)?;
+    let dir = lease_dir(project_root)?;
+    fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let path = lease_path(&dir, scope);
+
+    for _ in 0..4 {
+        let now = Utc::now();
+        let lease = LeaseRecord {
+            schema: LEASE_SCHEMA.to_string(),
+            scope: scope.to_string(),
+            owner: owner.to_string(),
+            task: task.map(str::to_string),
+            acquired_at: now.to_rfc3339_opts(SecondsFormat::Millis, true),
+            renewed_at: now.to_rfc3339_opts(SecondsFormat::Millis, true),
+            expires_at_ms: now
+                .timestamp_millis()
+                .saturating_add(ttl_millis(ttl_seconds)),
+        };
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                file.write_all(&serde_json::to_vec_pretty(&lease)?)?;
+                file.sync_all()?;
+                return Ok(lease);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                let existing = load_lease_path(&path)?;
+                if existing.owner == owner && !lease_expired(&existing) {
+                    return renew_lease(project_root, scope, owner, ttl_seconds);
+                }
+                if lease_expired(&existing) {
+                    match fs::remove_file(&path) {
+                        Ok(()) => continue,
+                        Err(remove_err)
+                            if remove_err.kind() == std::io::ErrorKind::NotFound =>
+                        {
+                            continue;
+                        }
+                        Err(remove_err) => {
+                            return Err(remove_err)
+                                .with_context(|| format!("remove expired {}", path.display()));
+                        }
+                    }
+                }
+                bail!(
+                    "lease {scope} is held by {} until {}",
+                    existing.owner,
+                    existing.expires_at_ms
+                );
+            }
+            Err(err) => return Err(err).with_context(|| format!("create {}", path.display())),
+        }
+    }
+    bail!("lease {scope} changed repeatedly while acquiring; retry the operation")
+}
+
+fn renew_lease(
+    project_root: &Path,
+    scope: &str,
+    owner: &str,
+    ttl_seconds: u64,
+) -> Result<LeaseRecord> {
+    validate_lease_token(scope, "lease scope")?;
+    validate_lease_token(owner, "lease owner")?;
+    let ttl_seconds = validate_lease_ttl(ttl_seconds)?;
+    let dir = lease_dir(project_root)?;
+    let path = lease_path(&dir, scope);
+    let mut lease = load_lease_path(&path)?;
+    if lease.owner != owner {
+        bail!("lease {scope} is owned by {}, not {owner}", lease.owner);
+    }
+    if lease_expired(&lease) {
+        bail!("lease {scope} has expired; acquire it again instead of renewing it");
+    }
+    let now = Utc::now();
+    lease.renewed_at = now.to_rfc3339_opts(SecondsFormat::Millis, true);
+    lease.expires_at_ms = now
+        .timestamp_millis()
+        .saturating_add(ttl_millis(ttl_seconds));
+    atomic_write_json(&path, &lease)?;
+    Ok(lease)
+}
+
+fn release_lease(project_root: &Path, scope: &str, owner: &str) -> Result<()> {
+    validate_lease_token(scope, "lease scope")?;
+    validate_lease_token(owner, "lease owner")?;
+    let dir = lease_dir(project_root)?;
+    let path = lease_path(&dir, scope);
+    let lease = load_lease_path(&path)?;
+    if lease.owner != owner {
+        bail!("lease {scope} is owned by {}, not {owner}", lease.owner);
+    }
+    fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))
+}
+
+fn list_leases(project_root: &Path) -> Result<Vec<LeaseView>> {
+    let dir = lease_dir(project_root)?;
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut leases = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("read {}", dir.display()))? {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        if !entry.path().is_file()
+            || entry.path().extension().and_then(|value| value.to_str()) != Some("json")
+        {
+            continue;
+        }
+        let lease = match load_lease_path(&entry.path()) {
+            Ok(lease) => lease,
+            Err(_) => continue,
+        };
+        leases.push(LeaseView {
+            expired: lease_expired(&lease),
+            lease,
+        });
+    }
+    leases.sort_by(|left, right| left.lease.scope.cmp(&right.lease.scope));
+    Ok(leases)
+}
+
+fn prune_expired_leases(project_root: &Path) -> Result<Vec<String>> {
+    let dir = lease_dir(project_root)?;
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut removed = Vec::new();
+    for entry in fs::read_dir(&dir).with_context(|| format!("read {}", dir.display()))? {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let lease = match load_lease_path(&path) {
+            Ok(lease) => lease,
+            Err(_) => continue,
+        };
+        if lease_expired(&lease) {
+            match fs::remove_file(&path) {
+                Ok(()) => removed.push(lease.scope),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err).with_context(|| format!("remove {}", path.display())),
+            }
+        }
+    }
+    removed.sort();
+    Ok(removed)
+}
+
+fn lease_dir(project_root: &Path) -> Result<PathBuf> {
+    let raw = git_output(project_root, &["rev-parse", "--git-common-dir"])?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        bail!("lease operations require a Git repository");
+    }
+    let common = PathBuf::from(raw);
+    let common = if common.is_absolute() {
+        common
+    } else {
+        project_root.join(common)
+    };
+    Ok(common.join("codexflow").join("leases"))
+}
+
+fn lease_path(dir: &Path, scope: &str) -> PathBuf {
+    dir.join(format!("{scope}.json"))
+}
+
+fn load_lease_path(path: &Path) -> Result<LeaseRecord> {
+    let data = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let lease: LeaseRecord =
+        serde_json::from_str(&data).with_context(|| format!("parse {}", path.display()))?;
+    if lease.schema != LEASE_SCHEMA {
+        bail!("unsupported lease schema {}", lease.schema);
+    }
+    Ok(lease)
+}
+
+fn lease_expired(lease: &LeaseRecord) -> bool {
+    Utc::now().timestamp_millis() >= lease.expires_at_ms
+}
+
+fn ttl_millis(ttl_seconds: u64) -> i64 {
+    i64::try_from(ttl_seconds)
+        .unwrap_or(i64::MAX / 1000)
+        .saturating_mul(1000)
+}
+
+fn validate_lease_ttl(ttl_seconds: u64) -> Result<u64> {
+    if !(MIN_LEASE_TTL_SECONDS..=MAX_LEASE_TTL_SECONDS).contains(&ttl_seconds) {
+        bail!(
+            "lease ttl must be between {MIN_LEASE_TTL_SECONDS} and {MAX_LEASE_TTL_SECONDS} seconds"
+        );
+    }
+    Ok(ttl_seconds)
+}
+
+fn validate_lease_token(value: &str, label: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 64
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-'
+        })
+    {
+        bail!(
+            "invalid {label} {value:?}; use lowercase letters, digits, _ or -, max 64 chars"
+        );
+    }
+    Ok(())
+}
+
+fn atomic_write_json(path: &Path, value: &impl Serialize) -> Result<()> {
+    fs::create_dir_all(path.parent().context("lease parent")?)?;
+    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+    fs::write(&tmp, serde_json::to_vec_pretty(value)?)
+        .with_context(|| format!("write {}", tmp.display()))?;
+    if cfg!(windows) && path.exists() {
+        fs::remove_file(path).with_context(|| format!("remove {}", path.display()))?;
+    }
+    fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))
+}
+
+fn git_output(project_root: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .current_dir(project_root)
+        .args(args)
+        .output()
+        .with_context(|| format!("git {}", args.join(" ")))?;
+    if !output.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn config_path(project_root: &Path) -> PathBuf {
@@ -593,5 +960,69 @@ fn department(id: &str, description: &str, triggers: &[&str], skills: &[&str]) -
         role: "flow_reviewer".to_string(),
         model: None,
         blocking_risks: vec!["high".to_string(), "critical".to_string()],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn leases_are_exclusive_until_released() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        init_repo(temp.path());
+        let first = acquire_lease(temp.path(), "task-demo", "worker-a", Some("demo"), 300)
+            .expect("first lease");
+        assert_eq!(first.owner, "worker-a");
+        let error = acquire_lease(temp.path(), "task-demo", "worker-b", Some("demo"), 300)
+            .expect_err("second owner must be blocked");
+        assert!(error.to_string().contains("held by worker-a"));
+        release_lease(temp.path(), "task-demo", "worker-a").expect("release");
+        let second = acquire_lease(temp.path(), "task-demo", "worker-b", Some("demo"), 300)
+            .expect("second lease");
+        assert_eq!(second.owner, "worker-b");
+    }
+
+    #[test]
+    fn expired_lease_can_be_reclaimed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        init_repo(temp.path());
+        let dir = lease_dir(temp.path()).expect("lease dir");
+        fs::create_dir_all(&dir).expect("lease dir create");
+        let expired = LeaseRecord {
+            schema: LEASE_SCHEMA.to_string(),
+            scope: "task-demo".to_string(),
+            owner: "worker-a".to_string(),
+            task: Some("demo".to_string()),
+            acquired_at: "2020-01-01T00:00:00Z".to_string(),
+            renewed_at: "2020-01-01T00:00:00Z".to_string(),
+            expires_at_ms: 1,
+        };
+        atomic_write_json(&lease_path(&dir, "task-demo"), &expired).expect("write expired");
+        let lease = acquire_lease(temp.path(), "task-demo", "worker-b", Some("demo"), 300)
+            .expect("reclaim");
+        assert_eq!(lease.owner, "worker-b");
+    }
+
+    #[test]
+    fn plan_emits_task_lease_scope() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let execution = plan(
+            temp.path(),
+            "update documentation".to_string(),
+            None,
+            Some("docs-task".to_string()),
+        )
+        .expect("plan");
+        assert_eq!(execution.lease_scope.as_deref(), Some("task-docs-task"));
+    }
+
+    fn init_repo(root: &Path) {
+        let status = Command::new("git")
+            .current_dir(root)
+            .args(["init", "-q"])
+            .status()
+            .expect("git init");
+        assert!(status.success());
     }
 }
