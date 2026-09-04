@@ -15,6 +15,17 @@ const PROFILE_BALANCED: &str = "balanced";
 const PROFILE_DEEP: &str = "deep";
 const PROFILE_CRITICAL: &str = "critical";
 
+const FAILURE_RETRIEVAL: &str = "retrieval";
+const FAILURE_TOOL_SELECTION: &str = "tool_selection";
+const FAILURE_INVALID_ARGUMENTS: &str = "invalid_arguments";
+const FAILURE_MISSING_DEPENDENCY: &str = "missing_dependency";
+const FAILURE_CONTEXT_INSUFFICIENCY: &str = "context_insufficiency";
+const FAILURE_REASONING: &str = "reasoning";
+const FAILURE_TEST: &str = "test";
+const FAILURE_PERMISSION: &str = "permission";
+const FAILURE_TIMEOUT: &str = "timeout";
+const FAILURE_AMBIGUOUS_REQUIREMENT: &str = "ambiguous_requirement";
+
 #[derive(Debug, Args)]
 pub struct RoutingArgs {
     #[arg(long)]
@@ -38,6 +49,23 @@ enum RoutingCommand {
         task: String,
         #[arg(long)]
         profile: Option<String>,
+    },
+    /// Select a deterministic recovery path for a failed attempt.
+    Recover {
+        /// Failure class: retrieval, tool_selection, invalid_arguments,
+        /// missing_dependency, context_insufficiency, reasoning, test,
+        /// permission, timeout, or ambiguous_requirement.
+        #[arg(long)]
+        failure: String,
+        /// One-based number of the failed attempt for the same objective.
+        #[arg(long, default_value_t = 1)]
+        attempt: u32,
+        /// Current adaptive route profile. Defaults to balanced.
+        #[arg(long)]
+        profile: Option<String>,
+        /// Optional short diagnostic used only for the emitted recovery record.
+        #[arg(long)]
+        detail: Option<String>,
     },
 }
 
@@ -140,6 +168,24 @@ pub struct RouteDecision {
     pub escalation_failure_threshold: u32,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct RecoveryDecision {
+    schema: &'static str,
+    failure_class: String,
+    attempt: u32,
+    detail: Option<String>,
+    current_profile: String,
+    next_profile: String,
+    action: String,
+    retry_allowed: bool,
+    strategy_change: bool,
+    additional_retrieval: bool,
+    rollback_recommended: bool,
+    human_approval: bool,
+    preserve_failure_evidence: bool,
+    verification_depth: String,
+}
+
 pub fn handle(project_root: &Path, args: RoutingArgs) -> Result<()> {
     match args.command {
         RoutingCommand::Init { force } => init(project_root, force),
@@ -152,6 +198,22 @@ pub fn handle(project_root: &Path, args: RoutingArgs) -> Result<()> {
         }
         RoutingCommand::Classify { task, profile } => {
             let decision = resolve_route(project_root, Some(&task), profile.as_deref())?;
+            println!("{}", serde_json::to_string_pretty(&decision)?);
+            Ok(())
+        }
+        RoutingCommand::Recover {
+            failure,
+            attempt,
+            profile,
+            detail,
+        } => {
+            let decision = resolve_recovery(
+                project_root,
+                &failure,
+                attempt,
+                profile.as_deref(),
+                detail,
+            )?;
             println!("{}", serde_json::to_string_pretty(&decision)?);
             Ok(())
         }
@@ -193,6 +255,104 @@ pub fn resolve_route(
         verification_depth: profile.verification_depth.clone(),
         human_approval: profile.human_approval,
         escalation_failure_threshold: policy.escalation_failure_threshold.max(1),
+    })
+}
+
+fn resolve_recovery(
+    project_root: &Path,
+    failure: &str,
+    attempt: u32,
+    current_profile: Option<&str>,
+    detail: Option<String>,
+) -> Result<RecoveryDecision> {
+    if attempt == 0 {
+        bail!("attempt must be at least 1");
+    }
+    let policy = load_policy(project_root)?;
+    validate_policy(&policy)?;
+    validate_failure_class(failure)?;
+    let current_profile = current_profile.unwrap_or(PROFILE_BALANCED);
+    validate_profile_name(current_profile)?;
+
+    let threshold = policy.escalation_failure_threshold.max(1);
+    let repeated = attempt >= threshold;
+    let mut next_profile = current_profile.to_string();
+    let mut retry_allowed = true;
+    let mut strategy_change = repeated;
+    let mut additional_retrieval = false;
+    let mut rollback_recommended = false;
+    let mut human_approval = false;
+
+    let action = match failure {
+        FAILURE_RETRIEVAL => {
+            additional_retrieval = true;
+            "broaden or rerank retrieval sources, preserve citations, then retry with targeted context"
+        }
+        FAILURE_TOOL_SELECTION => {
+            "select a narrower or alternate tool from capability metadata; do not repeat the identical call"
+        }
+        FAILURE_INVALID_ARGUMENTS => {
+            strategy_change = false;
+            "repair arguments against the tool schema and retry without increasing model depth"
+        }
+        FAILURE_MISSING_DEPENDENCY => {
+            retry_allowed = false;
+            "resolve, install, or explicitly block on the missing dependency before another model attempt"
+        }
+        FAILURE_CONTEXT_INSUFFICIENCY => {
+            additional_retrieval = true;
+            "retrieve the missing authoritative files or sources and rebuild a bounded context envelope"
+        }
+        FAILURE_REASONING => {
+            "replan from verified facts, isolate assumptions, and use a different reasoning strategy"
+        }
+        FAILURE_TEST => {
+            rollback_recommended = repeated;
+            "feed the exact failing test or compiler evidence into a targeted repair, then re-run verification"
+        }
+        FAILURE_PERMISSION => {
+            retry_allowed = false;
+            human_approval = true;
+            strategy_change = false;
+            "request the required permission or human approval; never bypass the boundary by retrying"
+        }
+        FAILURE_TIMEOUT => {
+            "narrow the scope, reduce unnecessary parallelism, and retry the smallest independently verifiable step"
+        }
+        FAILURE_AMBIGUOUS_REQUIREMENT => {
+            retry_allowed = false;
+            human_approval = true;
+            strategy_change = false;
+            "obtain a concrete requirement or acceptance criterion before implementation continues"
+        }
+        _ => unreachable!("validated failure class"),
+    };
+
+    if repeated && retry_allowed {
+        next_profile = escalate_profile(current_profile).to_string();
+    }
+    if next_profile == PROFILE_CRITICAL && repeated {
+        human_approval |= policy.critical.human_approval;
+    }
+    let verification_depth = policy_profile(&policy, &next_profile)
+        .verification_depth
+        .clone();
+
+    Ok(RecoveryDecision {
+        schema: "codexflow.recovery-decision.v1",
+        failure_class: failure.to_string(),
+        attempt,
+        detail: detail.filter(|value| !value.trim().is_empty()),
+        current_profile: current_profile.to_string(),
+        next_profile,
+        action: action.to_string(),
+        retry_allowed,
+        strategy_change,
+        additional_retrieval,
+        rollback_recommended,
+        human_approval,
+        preserve_failure_evidence: true,
+        verification_depth,
     })
 }
 
@@ -331,7 +491,7 @@ fn classify_task(task: &str) -> (u32, Vec<String>) {
         &[
             "research",
             "compare",
-            "multiple", 
+            "multiple",
             "candidate",
             "uncertain",
             "ambiguous",
@@ -358,6 +518,15 @@ fn profile_for_score(score: u32) -> &'static str {
         2..=4 => PROFILE_BALANCED,
         5..=7 => PROFILE_DEEP,
         _ => PROFILE_CRITICAL,
+    }
+}
+
+fn escalate_profile(profile: &str) -> &'static str {
+    match profile {
+        PROFILE_FAST => PROFILE_BALANCED,
+        PROFILE_BALANCED => PROFILE_DEEP,
+        PROFILE_DEEP | PROFILE_CRITICAL => PROFILE_CRITICAL,
+        _ => PROFILE_BALANCED,
     }
 }
 
@@ -434,6 +603,28 @@ fn validate_profile_name(profile: &str) -> Result<()> {
     .contains(&profile)
     {
         bail!("route profile must be fast, balanced, deep, or critical");
+    }
+    Ok(())
+}
+
+fn validate_failure_class(failure: &str) -> Result<()> {
+    if ![
+        FAILURE_RETRIEVAL,
+        FAILURE_TOOL_SELECTION,
+        FAILURE_INVALID_ARGUMENTS,
+        FAILURE_MISSING_DEPENDENCY,
+        FAILURE_CONTEXT_INSUFFICIENCY,
+        FAILURE_REASONING,
+        FAILURE_TEST,
+        FAILURE_PERMISSION,
+        FAILURE_TIMEOUT,
+        FAILURE_AMBIGUOUS_REQUIREMENT,
+    ]
+    .contains(&failure)
+    {
+        bail!(
+            "failure must be retrieval, tool_selection, invalid_arguments, missing_dependency, context_insufficiency, reasoning, test, permission, timeout, or ambiguous_requirement"
+        );
     }
     Ok(())
 }
@@ -516,6 +707,73 @@ mod tests {
         .expect("route");
         assert_eq!(decision.profile, PROFILE_FAST);
         assert_eq!(decision.reasoning_effort, "low");
+    }
+
+    #[test]
+    fn repeated_reasoning_failure_escalates_and_changes_strategy() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let decision = resolve_recovery(
+            temp.path(),
+            FAILURE_REASONING,
+            2,
+            Some(PROFILE_BALANCED),
+            Some("same hypothesis failed twice".to_string()),
+        )
+        .expect("recovery");
+        assert_eq!(decision.next_profile, PROFILE_DEEP);
+        assert!(decision.retry_allowed);
+        assert!(decision.strategy_change);
+        assert!(decision.preserve_failure_evidence);
+    }
+
+    #[test]
+    fn permission_and_ambiguity_never_blindly_retry() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        for failure in [FAILURE_PERMISSION, FAILURE_AMBIGUOUS_REQUIREMENT] {
+            let decision = resolve_recovery(
+                temp.path(),
+                failure,
+                1,
+                Some(PROFILE_BALANCED),
+                None,
+            )
+            .expect("recovery");
+            assert!(!decision.retry_allowed);
+            assert!(decision.human_approval);
+            assert!(!decision.strategy_change);
+        }
+    }
+
+    #[test]
+    fn repeated_test_failure_recommends_rollback_and_deeper_verification() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let decision = resolve_recovery(
+            temp.path(),
+            FAILURE_TEST,
+            2,
+            Some(PROFILE_DEEP),
+            None,
+        )
+        .expect("recovery");
+        assert_eq!(decision.next_profile, PROFILE_CRITICAL);
+        assert!(decision.rollback_recommended);
+        assert_eq!(decision.verification_depth, "exhaustive");
+    }
+
+    #[test]
+    fn invalid_arguments_repairs_schema_without_escalating_strategy() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let decision = resolve_recovery(
+            temp.path(),
+            FAILURE_INVALID_ARGUMENTS,
+            3,
+            Some(PROFILE_FAST),
+            None,
+        )
+        .expect("recovery");
+        assert_eq!(decision.next_profile, PROFILE_BALANCED);
+        assert!(decision.retry_allowed);
+        assert!(!decision.strategy_change);
     }
 
     #[test]
