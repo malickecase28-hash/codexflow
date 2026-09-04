@@ -36,8 +36,9 @@ jobs:
 
       - uses: ./.github/actions/setup-ci
 
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e
         with:
+          toolchain: "1.98.1"
           components: rustfmt
 
       - uses: ./.github/actions/setup-rusty-v8
@@ -49,6 +50,9 @@ jobs:
 
       - name: Check CodexFlow runtime binaries
         run: cargo check -p codex-cli --bin codexflow --bin codexflow-supervisor
+
+      - name: Run CodexFlow context and CLI tests
+        run: cargo test -p codex-cli --bin codexflow
 
       - name: Run CodexFlow supervisor durability tests
         run: cargo test -p codex-cli --bin codexflow-supervisor
