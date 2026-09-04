@@ -1,4 +1,5 @@
 mod recovery_ledger;
+mod recovery_replay;
 mod recovery_report;
 
 use anyhow::Context;
@@ -79,6 +80,12 @@ enum RoutingCommand {
     Report {
         #[arg(long, default_value_t = 1000)]
         limit: usize,
+    },
+    /// Recompute a stored recovery event under the current routing policy.
+    Replay {
+        /// Zero selects the newest record, one selects the prior record.
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
     },
 }
 
@@ -242,6 +249,13 @@ pub fn handle(project_root: &Path, args: RoutingArgs) -> Result<()> {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&recovery_report::build(project_root, limit)?)?
+            );
+            Ok(())
+        }
+        RoutingCommand::Replay { offset } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&recovery_replay::replay(project_root, offset)?)?
             );
             Ok(())
         }
