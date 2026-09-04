@@ -1,0 +1,27 @@
+{
+  "name": "codexflow-github",
+  "version": "0.0.0-edge",
+  "description": "GitHub-distributed CodexFlow CLI using precompiled native binaries.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "codexflow": "bin/codexflow.js",
+    "codexflow-supervisor": "bin/codexflow-supervisor.js"
+  },
+  "files": [
+    "bin",
+    "scripts",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/install.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/malickecase28-hash/codexflow.git",
+    "directory": "npm/codexflow-cli"
+  }
+}
