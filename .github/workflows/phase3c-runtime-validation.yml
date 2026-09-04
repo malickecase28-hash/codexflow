@@ -38,6 +38,7 @@ jobs:
           python .github/scripts/phase3c_complete.py
           python .github/scripts/phase3c_harden.py
           python .github/scripts/phase3c_lease_harden.py
+          python .github/scripts/phase3c_lease_lock_token_harden.py
 
       - name: Format and validate runtime
         shell: bash
