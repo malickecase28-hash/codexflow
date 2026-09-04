@@ -41,6 +41,8 @@ enum RuntimeCommand {
         assignee: Option<String>,
         #[arg(long = "depends-on")]
         depends_on: Vec<String>,
+        #[arg(long = "acceptance")]
+        acceptance: Vec<String>,
     },
     TaskSet {
         #[arg(long)]
@@ -53,6 +55,30 @@ enum RuntimeCommand {
         assignee: Option<String>,
         #[arg(long)]
         budget_tokens: Option<u64>,
+    },
+    TaskAcceptanceAdd {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        criterion: Option<String>,
+        #[arg(long)]
+        text: String,
+    },
+    TaskEvidence {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        criterion: String,
+        #[arg(long)]
+        status: String,
+        #[arg(long)]
+        evidence: String,
+    },
+    TaskComplete {
+        #[arg(long)]
+        id: String,
+        #[arg(long, default_value = "god")]
+        actor: String,
     },
     TaskWait {
         #[arg(long)]
@@ -162,8 +188,19 @@ struct TaskRecord {
     used_tokens: u64,
     #[serde(default)]
     waiting_on: Option<String>,
+    #[serde(default)]
+    acceptance: Vec<AcceptanceCriterion>,
     gates: BTreeMap<String, GateRecord>,
     handoffs: Vec<HandoffRecord>,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AcceptanceCriterion {
+    id: String,
+    text: String,
+    status: String,
+    evidence: Vec<String>,
     updated_at: String,
 }
 
@@ -208,6 +245,13 @@ struct BreakerFinding {
     detail: String,
 }
 
+#[derive(Debug, Serialize)]
+struct CompletionCheck {
+    task: String,
+    ready: bool,
+    blockers: Vec<String>,
+}
+
 pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
     match args.command {
         RuntimeCommand::Init => {
@@ -221,11 +265,15 @@ pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
             risk,
             assignee,
             depends_on,
+            acceptance,
         } => with_locked_ledger(project_root, |ledger| {
             validate_id(&id)?;
             validate_risk(&risk)?;
             if ledger.tasks.contains_key(&id) {
                 bail!("task already exists: {id}");
+            }
+            for dependency in &depends_on {
+                validate_id(dependency)?;
             }
             let now = now_iso();
             ledger.tasks.insert(
@@ -239,6 +287,7 @@ pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
                     budget_tokens: None,
                     used_tokens: 0,
                     waiting_on: None,
+                    acceptance: acceptance_records(acceptance)?,
                     gates: BTreeMap::new(),
                     handoffs: Vec::new(),
                     updated_at: now,
@@ -270,6 +319,9 @@ pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
                 if status == "blocked_waiting" {
                     bail!("use task-wait so blocked_waiting records the await id");
                 }
+                if status == "done" {
+                    bail!("use task-complete so completion criteria and gates are checked");
+                }
                 task.status = status;
                 task.waiting_on = None;
             }
@@ -284,6 +336,101 @@ pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
                 task.budget_tokens = budget_tokens;
             }
             task.updated_at = now_iso();
+            println!("{}", serde_json::to_string_pretty(task)?);
+            Ok(())
+        }),
+        RuntimeCommand::TaskAcceptanceAdd {
+            id,
+            criterion,
+            text,
+        } => with_locked_ledger(project_root, |ledger| {
+            validate_acceptance_text(&text)?;
+            let task = ledger
+                .tasks
+                .get_mut(&id)
+                .with_context(|| format!("unknown task: {id}"))?;
+            let criterion_id = criterion.unwrap_or_else(|| format!("ac-{}", task.acceptance.len() + 1));
+            validate_id(&criterion_id)?;
+            if task.acceptance.iter().any(|item| item.id == criterion_id) {
+                bail!("acceptance criterion already exists: {criterion_id}");
+            }
+            task.acceptance.push(AcceptanceCriterion {
+                id: criterion_id.clone(),
+                text,
+                status: "pending".to_string(),
+                evidence: Vec::new(),
+                updated_at: now_iso(),
+            });
+            task.updated_at = now_iso();
+            append_event(
+                project_root,
+                "task.acceptance.added",
+                "god",
+                Some(&id),
+                &criterion_id,
+            )?;
+            println!("{}", serde_json::to_string_pretty(task)?);
+            Ok(())
+        }),
+        RuntimeCommand::TaskEvidence {
+            id,
+            criterion,
+            status,
+            evidence,
+        } => with_locked_ledger(project_root, |ledger| {
+            validate_acceptance_status(&status)?;
+            validate_evidence(&evidence)?;
+            let task = ledger
+                .tasks
+                .get_mut(&id)
+                .with_context(|| format!("unknown task: {id}"))?;
+            let item = task
+                .acceptance
+                .iter_mut()
+                .find(|item| item.id == criterion)
+                .with_context(|| format!("unknown acceptance criterion {criterion} for task {id}"))?;
+            if !item.evidence.iter().any(|existing| existing == &evidence) {
+                item.evidence.push(evidence.clone());
+            }
+            item.status = status;
+            item.updated_at = now_iso();
+            task.updated_at = now_iso();
+            append_event(
+                project_root,
+                "task.acceptance.evidence",
+                "verifier",
+                Some(&id),
+                &format!("{criterion}: {evidence}"),
+            )?;
+            println!("{}", serde_json::to_string_pretty(item)?);
+            Ok(())
+        }),
+        RuntimeCommand::TaskComplete { id, actor } => with_locked_ledger(project_root, |ledger| {
+            validate_id(&actor)?;
+            let blockers = completion_blockers(ledger, &id)?;
+            let check = CompletionCheck {
+                task: id.clone(),
+                ready: blockers.is_empty(),
+                blockers,
+            };
+            if !check.ready {
+                println!("{}", serde_json::to_string_pretty(&check)?);
+                bail!("task {id} is not ready for completion");
+            }
+            let task = ledger
+                .tasks
+                .get_mut(&id)
+                .with_context(|| format!("unknown task: {id}"))?;
+            task.status = "done".to_string();
+            task.waiting_on = None;
+            task.updated_at = now_iso();
+            append_event(
+                project_root,
+                "task.completed",
+                &actor,
+                Some(&id),
+                "completion gate passed",
+            )?;
             println!("{}", serde_json::to_string_pretty(task)?);
             Ok(())
         }),
@@ -547,6 +694,7 @@ pub fn seed_orchestration_plan(
                 budget_tokens: None,
                 used_tokens: 0,
                 waiting_on: None,
+                acceptance: Vec::new(),
                 gates: BTreeMap::new(),
                 handoffs: Vec::new(),
                 updated_at: now.clone(),
@@ -574,6 +722,64 @@ pub fn seed_orchestration_plan(
         )?;
         Ok(())
     })
+}
+
+fn completion_blockers(ledger: &RuntimeLedger, task_id: &str) -> Result<Vec<String>> {
+    let task = ledger
+        .tasks
+        .get(task_id)
+        .with_context(|| format!("unknown task: {task_id}"))?;
+    let mut blockers = Vec::new();
+
+    if task.acceptance.is_empty() {
+        blockers.push("no acceptance criteria are recorded".to_string());
+    }
+    for criterion in &task.acceptance {
+        if criterion.status != "pass" {
+            blockers.push(format!(
+                "acceptance {} is {}: {}",
+                criterion.id, criterion.status, criterion.text
+            ));
+        } else if criterion.evidence.is_empty() {
+            blockers.push(format!("acceptance {} has no evidence", criterion.id));
+        }
+    }
+    for dependency in &task.depends_on {
+        match ledger.tasks.get(dependency) {
+            Some(record) if record.status == "done" => {}
+            Some(record) => blockers.push(format!(
+                "dependency {dependency} is {} instead of done",
+                record.status
+            )),
+            None => blockers.push(format!("dependency {dependency} does not exist")),
+        }
+    }
+    for (name, gate) in &task.gates {
+        if gate.status == "block" {
+            blockers.push(format!("gate {name} is blocking"));
+        }
+    }
+    if task.status == "cancelled" || task.status == "failed" {
+        blockers.push(format!("task status {} cannot complete", task.status));
+    }
+    Ok(blockers)
+}
+
+fn acceptance_records(values: Vec<String>) -> Result<Vec<AcceptanceCriterion>> {
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(index, text)| {
+            validate_acceptance_text(&text)?;
+            Ok(AcceptanceCriterion {
+                id: format!("ac-{}", index + 1),
+                text,
+                status: "pending".to_string(),
+                evidence: Vec::new(),
+                updated_at: now_iso(),
+            })
+        })
+        .collect()
 }
 
 fn supervise(
@@ -845,6 +1051,29 @@ fn validate_task_status(value: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_acceptance_status(value: &str) -> Result<()> {
+    if !["pending", "pass", "fail"].contains(&value) {
+        bail!("invalid acceptance status {value}");
+    }
+    Ok(())
+}
+
+fn validate_acceptance_text(value: &str) -> Result<()> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().count() > 1024 {
+        bail!("acceptance criterion must be 1 to 1024 characters");
+    }
+    Ok(())
+}
+
+fn validate_evidence(value: &str) -> Result<()> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().count() > 2048 {
+        bail!("evidence must be 1 to 2048 characters");
+    }
+    Ok(())
+}
+
 fn validate_agent_status(value: &str) -> Result<()> {
     if ![
         "pending",
@@ -867,4 +1096,92 @@ fn validate_gate_status(value: &str) -> Result<()> {
         bail!("invalid gate status {value}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task_with_acceptance(text: &str) -> TaskRecord {
+        TaskRecord {
+            title: "demo".to_string(),
+            status: "review".to_string(),
+            risk: "medium".to_string(),
+            assignee: None,
+            depends_on: Vec::new(),
+            budget_tokens: None,
+            used_tokens: 0,
+            waiting_on: None,
+            acceptance: vec![AcceptanceCriterion {
+                id: "ac-1".to_string(),
+                text: text.to_string(),
+                status: "pending".to_string(),
+                evidence: Vec::new(),
+                updated_at: now_iso(),
+            }],
+            gates: BTreeMap::new(),
+            handoffs: Vec::new(),
+            updated_at: now_iso(),
+        }
+    }
+
+    #[test]
+    fn completion_requires_passing_evidence() {
+        let mut ledger = default_ledger(Path::new("/demo"));
+        ledger
+            .tasks
+            .insert("task-a".to_string(), task_with_acceptance("feature works"));
+        let blockers = completion_blockers(&ledger, "task-a").expect("check blockers");
+        assert_eq!(blockers.len(), 1);
+        assert!(blockers[0].contains("acceptance ac-1 is pending"));
+
+        let task = ledger.tasks.get_mut("task-a").expect("task");
+        task.acceptance[0].status = "pass".to_string();
+        task.acceptance[0].evidence.push("cargo test: pass".to_string());
+        assert!(
+            completion_blockers(&ledger, "task-a")
+                .expect("check ready")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn completion_requires_done_dependencies_and_non_blocking_gates() {
+        let mut ledger = default_ledger(Path::new("/demo"));
+        let mut task = task_with_acceptance("integration passes");
+        task.acceptance[0].status = "pass".to_string();
+        task.acceptance[0].evidence.push("integration suite".to_string());
+        task.depends_on.push("dep".to_string());
+        task.gates.insert(
+            "security".to_string(),
+            GateRecord {
+                status: "block".to_string(),
+                risk: "high".to_string(),
+                reviewer: Some("reviewer".to_string()),
+                finding: Some("open finding".to_string()),
+                updated_at: now_iso(),
+            },
+        );
+        ledger.tasks.insert("task-a".to_string(), task);
+        ledger.tasks.insert(
+            "dep".to_string(),
+            TaskRecord {
+                title: "dependency".to_string(),
+                status: "doing".to_string(),
+                risk: "low".to_string(),
+                assignee: None,
+                depends_on: Vec::new(),
+                budget_tokens: None,
+                used_tokens: 0,
+                waiting_on: None,
+                acceptance: Vec::new(),
+                gates: BTreeMap::new(),
+                handoffs: Vec::new(),
+                updated_at: now_iso(),
+            },
+        );
+        let blockers = completion_blockers(&ledger, "task-a").expect("check blockers");
+        assert!(blockers.iter().any(|item| item.contains("dependency dep")));
+        assert!(blockers.iter().any(|item| item.contains("gate security")));
+    }
 }
