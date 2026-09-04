@@ -152,6 +152,7 @@ single_version_override(
     patches = [
         "//patches:rules_rs_build_script_deps_annotation.patch",
         "//patches:rules_rs_windows_msvc_linker.patch",
+        "//patches:rules_rs_ubuntu_zlib_snapshot.patch",
     ],
     version = "0.0.96",
 )
@@ -246,7 +247,7 @@ use_repo(nightly_rust, "rust_toolchains")
 toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
 toolchains.toolchain(
     edition = "2024",
-    version = "1.95.0",
+    version = "1.98.1",
 )
 use_repo(toolchains, "default_rust_toolchains")
 
