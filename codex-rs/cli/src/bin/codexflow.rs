@@ -2,6 +2,8 @@
 mod build_manager;
 #[path = "codexflow/caretaker.rs"]
 mod caretaker;
+#[path = "codexflow/context_engine.rs"]
+mod context_engine;
 #[path = "codexflow/delivery.rs"]
 mod delivery;
 #[path = "codexflow/orchestrator.rs"]
@@ -104,6 +106,7 @@ enum TopCommand {
     Doctor(DoctorArgs),
     Setup(SetupArgs),
     Runtime(runtime_state::RuntimeArgs),
+    Context(context_engine::ContextArgs),
     Build(build_manager::BuildArgs),
     Orchestrate(orchestrator::OrchestrateArgs),
     Delivery(delivery::DeliveryArgs),
@@ -158,6 +161,8 @@ enum ProjectCommand {
 #[derive(Debug, Args)]
 struct RunArgs {
     project: Option<String>,
+    #[arg(long)]
+    task: Option<String>,
     #[arg(last = true, allow_hyphen_values = true)]
     codex_args: Vec<OsString>,
 }
@@ -187,6 +192,10 @@ async fn main() -> Result<()> {
                     let project = resolve_scoped_project(&runtime, args.project.as_deref()).await?;
                     runtime_state::handle(&primary_root(&project)?, args)
                 }
+                Some(TopCommand::Context(args)) => {
+                    let project = resolve_scoped_project(&runtime, args.project.as_deref()).await?;
+                    context_engine::handle(&primary_root(&project)?, args)
+                }
                 Some(TopCommand::Build(args)) => {
                     let project = resolve_scoped_project(&runtime, args.project.as_deref()).await?;
                     build_manager::handle(&primary_root(&project)?, args)
@@ -209,6 +218,7 @@ async fn main() -> Result<()> {
                         &runtime,
                         RunArgs {
                             project: None,
+                            task: None,
                             codex_args: Vec::new(),
                         },
                     )
@@ -392,7 +402,11 @@ async fn run_project(runtime: &StateRuntime, args: RunArgs) -> Result<()> {
     let project = resolve_scoped_project(runtime, args.project.as_deref()).await?;
     let primary_root = primary_root(&project)?;
     let codex = sibling_codex_executable()?;
-    let encoded_god = serde_json::to_string(GOD_INSTRUCTIONS)?;
+    let env_task = std::env::var("CODEXFLOW_TASK").ok();
+    let task = args.task.as_deref().or(env_task.as_deref());
+    let instructions =
+        context_engine::assemble_run_instructions(&primary_root, GOD_INSTRUCTIONS, task, 16_000)?;
+    let encoded_god = serde_json::to_string(&instructions)?;
     let mut command = Command::new(&codex);
     command
         .arg("--profile")
