@@ -31,6 +31,7 @@ const AWAIT_SCHEMA: &str = "codexflow.await.v1";
 const INBOX_SCHEMA: &str = "codexflow.inbox.v1";
 const LOCK_STALE_AFTER: Duration = Duration::from_secs(120);
 const LOCK_WAIT_LIMIT: Duration = Duration::from_secs(8);
+const SUPERVISOR_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Parser)]
 #[command(
@@ -160,6 +161,12 @@ struct WireResponse {
     error: Option<String>,
 }
 
+#[derive(Debug)]
+enum SupervisorSendError {
+    NotDispatched(anyhow::Error),
+    DoNotReplay(anyhow::Error),
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -285,36 +292,66 @@ fn handle_connection(project_root: &Path, mut stream: TcpStream) -> Result<()> {
 }
 
 fn execute_with_optional_supervisor(project_root: &Path, request: WireRequest) -> Result<Value> {
-    if let Ok(endpoint) = read_endpoint(project_root)
-        && let Ok(value) = send_request(&endpoint, &request)
-    {
-        return Ok(value);
+    if let Ok(endpoint) = read_endpoint(project_root) {
+        match send_request(&endpoint, &request) {
+            Ok(value) => return Ok(value),
+            Err(SupervisorSendError::NotDispatched(_)) => {}
+            Err(SupervisorSendError::DoNotReplay(err)) => {
+                return Err(err)
+                    .context("supervisor request was dispatched; refusing unsafe local replay");
+            }
+        }
     }
     execute_request(project_root, request)
 }
 
-fn send_request(endpoint: &SupervisorEndpoint, request: &WireRequest) -> Result<Value> {
+fn send_request(
+    endpoint: &SupervisorEndpoint,
+    request: &WireRequest,
+) -> std::result::Result<Value, SupervisorSendError> {
     if endpoint.schema != ENDPOINT_SCHEMA {
-        bail!("unsupported supervisor endpoint schema {}", endpoint.schema);
+        return Err(SupervisorSendError::NotDispatched(anyhow::Error::msg(
+            format!("unsupported supervisor endpoint schema {}", endpoint.schema),
+        )));
     }
-    let mut stream = TcpStream::connect(&endpoint.address)
-        .with_context(|| format!("connect to supervisor {}", endpoint.address))?;
-    writeln!(stream, "{}", serde_json::to_string(request)?)?;
-    stream.flush()?;
+    let encoded = serde_json::to_string(request)
+        .map_err(|err| SupervisorSendError::NotDispatched(err.into()))?;
+    let mut stream = TcpStream::connect(&endpoint.address).map_err(|err| {
+        SupervisorSendError::NotDispatched(
+            anyhow::Error::new(err).context(format!("connect to supervisor {}", endpoint.address)),
+        )
+    })?;
+    stream
+        .set_read_timeout(Some(SUPERVISOR_IO_TIMEOUT))
+        .map_err(|err| SupervisorSendError::NotDispatched(err.into()))?;
+    stream
+        .set_write_timeout(Some(SUPERVISOR_IO_TIMEOUT))
+        .map_err(|err| SupervisorSendError::NotDispatched(err.into()))?;
+    writeln!(stream, "{encoded}").map_err(|err| SupervisorSendError::DoNotReplay(err.into()))?;
+    stream
+        .flush()
+        .map_err(|err| SupervisorSendError::DoNotReplay(err.into()))?;
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    reader
+    let bytes = reader
         .read_line(&mut line)
-        .context("read supervisor response")?;
-    let response: WireResponse =
-        serde_json::from_str(line.trim_end()).context("parse supervisor response")?;
+        .map_err(|err| SupervisorSendError::DoNotReplay(anyhow::Error::new(err)))?;
+    if bytes == 0 || line.trim().is_empty() {
+        return Err(SupervisorSendError::DoNotReplay(anyhow::Error::msg(
+            "supervisor closed the connection without a response",
+        )));
+    }
+    let response: WireResponse = serde_json::from_str(line.trim_end()).map_err(|err| {
+        SupervisorSendError::DoNotReplay(
+            anyhow::Error::new(err).context("parse supervisor response"),
+        )
+    })?;
     if !response.ok {
-        bail!(
-            "{}",
+        return Err(SupervisorSendError::DoNotReplay(anyhow::Error::msg(
             response
                 .error
-                .unwrap_or_else(|| "supervisor request failed".to_string())
-        );
+                .unwrap_or_else(|| "supervisor request failed".to_string()),
+        )));
     }
     Ok(response.value.unwrap_or(Value::Null))
 }
@@ -982,6 +1019,55 @@ mod tests {
         let inbox: Vec<InboxRecord> =
             read_json_lines(&inbox_path(root, "/root")).expect("read inbox");
         assert_eq!(inbox.len(), 1);
+    }
+
+    #[test]
+    fn dispatched_publish_is_not_replayed_when_response_is_lost() {
+        let temp = tempfile::tempdir().expect("create supervisor state");
+        let root = temp.path();
+        ensure_state_dirs(root).expect("create state directories");
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake supervisor");
+        let endpoint = SupervisorEndpoint {
+            schema: ENDPOINT_SCHEMA.to_string(),
+            address: listener
+                .local_addr()
+                .expect("read fake address")
+                .to_string(),
+            pid: std::process::id(),
+            started_at: "now".to_string(),
+        };
+        write_json_atomic(&endpoint_path(root), &endpoint).expect("write fake endpoint");
+
+        let server_root = root.to_path_buf();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept fake supervisor request");
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read fake request");
+            let request: WireRequest =
+                serde_json::from_str(line.trim_end()).expect("parse fake request");
+            execute_request(&server_root, request).expect("commit fake request");
+        });
+
+        let result = execute_with_optional_supervisor(
+            root,
+            WireRequest::Publish {
+                kind: "agent.completed".to_string(),
+                key: Some("worker-1".to_string()),
+                payload: Value::Null,
+            },
+        );
+        assert!(
+            result.is_err(),
+            "lost response must not trigger local replay"
+        );
+        server.join().expect("join fake supervisor");
+
+        let events: Vec<EventEnvelope> =
+            read_json_lines(&events_path(root)).expect("read persisted events");
+        assert_eq!(events.len(), 1, "publish must be committed exactly once");
+        assert_eq!(events[0].seq, 1);
     }
 
     #[test]
