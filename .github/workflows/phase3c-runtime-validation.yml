@@ -1,0 +1,64 @@
+name: Phase 3C runtime validation
+
+on:
+  push:
+    branches:
+      - codexflow/phase3c-event-runtime-master-map
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  complete-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: codexflow/phase3c-event-runtime-master-map
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e
+        with:
+          toolchain: "1.98.1"
+          components: rustfmt
+
+      - name: Apply guarded source transformation
+        run: python .github/scripts/phase3c_complete.py
+
+      - name: Format and validate runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd codex-rs
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo check -p codex-cli --bin codexflow --bin codexflow-supervisor
+          cargo test -p codex-cli --bin codexflow
+          cargo test -p codex-cli --bin codexflow-supervisor
+          cargo test -p codex-core 'multi_agents_v2::wait::tests::'
+          cargo test -p codex-core 'wait_agent_tool_v2_'
+          cd ..
+          git diff --check
+
+      - name: Commit completed Phase 3C runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add codex-rs/cli/src/bin/codexflow.rs \
+                  codex-rs/cli/src/bin/codexflow/event.rs \
+                  codex-rs/cli/src/bin/codexflow-supervisor.rs \
+                  codex-rs/cli/Cargo.toml \
+                  .github/workflows/codexflow-prebuilt-windows.yml
+          git commit -m "feat: complete Phase 3C durable event runtime"
+          git fetch origin codexflow/phase3c-event-runtime-master-map
+          git rebase origin/codexflow/phase3c-event-runtime-master-map
+          git push origin HEAD:codexflow/phase3c-event-runtime-master-map
