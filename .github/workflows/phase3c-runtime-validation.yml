@@ -37,6 +37,7 @@ jobs:
         run: |
           python .github/scripts/phase3c_complete.py
           python .github/scripts/phase3c_harden.py
+          python .github/scripts/phase3c_lease_harden.py
 
       - name: Format and validate runtime
         shell: bash
