@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: phase3c-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   complete-and-test:
     if: github.actor != 'github-actions[bot]'
@@ -29,8 +33,10 @@ jobs:
           toolchain: "1.98.1"
           components: rustfmt
 
-      - name: Apply guarded source transformation
-        run: python .github/scripts/phase3c_complete.py
+      - name: Apply guarded Phase 3C transformations
+        run: |
+          python .github/scripts/phase3c_complete.py
+          python .github/scripts/phase3c_harden.py
 
       - name: Format and validate runtime
         shell: bash
