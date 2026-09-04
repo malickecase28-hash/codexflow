@@ -29,14 +29,21 @@ const vendorRoot = path.join(packageRoot, "vendor");
 await rm(vendorRoot, { recursive: true, force: true });
 
 try {
-  for (const binaryName of ["codexflow", "codexflow-supervisor"]) {
+  for (const binaryName of [
+    "codex",
+    "codexflow",
+    "codexflow-supervisor",
+    "codex-code-mode-host",
+  ]) {
     const destination = vendorBinaryPath(packageRoot, binaryName, resolved);
     await mkdir(path.dirname(destination), { recursive: true });
     await copyFile(process.execPath, destination);
     if (process.platform !== "win32") {
       await chmod(destination, 0o755);
     }
+  }
 
+  for (const binaryName of ["codexflow", "codexflow-supervisor"]) {
     const launcher = path.join(packageRoot, "bin", `${binaryName}.js`);
     const completed = spawnSync(process.execPath, [launcher, "--version"], {
       cwd: packageRoot,
@@ -48,6 +55,16 @@ try {
       0,
       `${binaryName} launcher failed: ${completed.stderr || completed.stdout}`,
     );
+  }
+
+  for (const binaryName of ["codex", "codex-code-mode-host"]) {
+    const installed = vendorBinaryPath(packageRoot, binaryName, resolved);
+    const completed = spawnSync(installed, ["--version"], {
+      cwd: packageRoot,
+      env: process.env,
+      encoding: "utf8",
+    });
+    assert.equal(completed.status, 0, `${binaryName} sibling runtime is not executable`);
   }
 } finally {
   await rm(vendorRoot, { recursive: true, force: true });

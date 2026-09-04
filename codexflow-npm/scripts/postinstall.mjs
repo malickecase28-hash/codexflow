@@ -13,7 +13,10 @@ if (process.env.CODEXFLOW_SKIP_DOWNLOAD === "1") {
   process.exit(0);
 }
 
-const releaseTag = process.env.CODEXFLOW_RELEASE_TAG || releaseTagForVersion(packageJson.version);
+const releaseTag =
+  process.env.CODEXFLOW_RELEASE_TAG ||
+  packageJson.codexflowReleaseTag ||
+  releaseTagForVersion(packageJson.version);
 const releaseBaseUrl =
   process.env.CODEXFLOW_RELEASE_BASE_URL ||
   `https://github.com/malickecase28-hash/codexflow/releases/download/${releaseTag}`;
@@ -22,7 +25,12 @@ const checksumManifest = parseChecksums(
   (await download(`${releaseBaseUrl}/checksums.txt`)).toString("utf8"),
 );
 
-for (const binaryName of ["codexflow", "codexflow-supervisor"]) {
+for (const binaryName of [
+  "codex",
+  "codexflow",
+  "codexflow-supervisor",
+  "codex-code-mode-host",
+]) {
   const asset = binaryAssetName(binaryName, resolved);
   const expected = checksumManifest.get(asset);
   if (!expected) {
@@ -115,6 +123,9 @@ function download(url, redirects = 0) {
         response.on("error", reject);
       },
     );
+    request.setTimeout(60_000, () => {
+      request.destroy(new Error(`Download timed out for ${url}`));
+    });
     request.on("error", reject);
   });
 }
