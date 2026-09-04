@@ -1,4 +1,5 @@
 mod recovery_ledger;
+mod recovery_report;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -72,6 +73,11 @@ enum RoutingCommand {
     /// Show the most recent durable recovery records.
     History {
         #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// Summarize durable recovery trajectories as deterministic metrics.
+    Report {
+        #[arg(long, default_value_t = 1000)]
         limit: usize,
     },
 }
@@ -229,6 +235,13 @@ pub fn handle(project_root: &Path, args: RoutingArgs) -> Result<()> {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&recovery_ledger::history(project_root, limit)?)?
+            );
+            Ok(())
+        }
+        RoutingCommand::Report { limit } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&recovery_report::build(project_root, limit)?)?
             );
             Ok(())
         }

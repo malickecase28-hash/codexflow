@@ -127,7 +127,27 @@ def history(binary: Path, env: dict[str, str], root: Path) -> list[dict[str, obj
     return value
 
 
-def report(env: dict[str, str], root: Path) -> dict[str, object]:
+def native_report(binary: Path, env: dict[str, str], root: Path) -> dict[str, object]:
+    completed = run(
+        [
+            str(binary),
+            "route",
+            "--project",
+            "recovery-eval",
+            "report",
+            "--limit",
+            "100",
+        ],
+        env,
+        root,
+    )
+    value = json.loads(completed.stdout)
+    if not isinstance(value, dict):
+        raise AssertionError(f"route report returned {type(value).__name__}, expected object")
+    return value
+
+
+def independent_report(env: dict[str, str], root: Path) -> dict[str, object]:
     report_script = Path(__file__).resolve().with_name("recovery_report.py")
     completed = run(
         [sys.executable, str(report_script), "--project-root", str(root)],
@@ -211,7 +231,7 @@ def main() -> int:
         assert_equal(final_decision.get("failure_class"), "reasoning", "history.last.failure_class")
         assert_equal(final_decision.get("next_profile"), "critical", "history.last.next_profile")
 
-        metrics = report(env, root)
+        metrics = independent_report(env, root)
         assert_equal(metrics.get("schema"), "codexflow.recovery-report.v1", "report.schema")
         assert_equal(metrics.get("records"), 11, "report.records")
         assert_equal(metrics.get("retry_allowed"), 8, "report.retry_allowed")
@@ -239,6 +259,9 @@ def main() -> int:
             expected = 2 if failure == "reasoning" else 1
             assert_equal(failure_counts.get(failure), expected, f"report.failure_counts.{failure}")
 
+        native_metrics = native_report(binary, env, root)
+        assert_equal(native_metrics, metrics, "report.native_matches_independent")
+
         invalid = subprocess.run(
             [
                 str(binary),
@@ -258,16 +281,18 @@ def main() -> int:
         if invalid.returncode == 0:
             raise AssertionError("unknown failure class unexpectedly succeeded")
         assert_equal(len(history(binary, env, root)), len(durable), "history.after_invalid_count")
-        assert_equal(report(env, root).get("records"), 11, "report.after_invalid_records")
+        assert_equal(independent_report(env, root).get("records"), 11, "report.after_invalid_records")
+        assert_equal(native_report(binary, env, root), metrics, "report.native_after_invalid")
 
         summary = {
             "schema": "codexflow.recovery-eval.v1",
-            "cases": len(results) + 4,
-            "passed": len(results) + 4,
+            "cases": len(results) + 5,
+            "passed": len(results) + 5,
             "failure_classes": sorted(results),
             "critical_escalation_verified": True,
             "durable_history_verified": True,
             "deterministic_metrics_verified": True,
+            "native_report_matches_independent_verifier": True,
             "invalid_failure_rejected_without_record": True,
         }
         print(json.dumps(summary, indent=2, sort_keys=True))
