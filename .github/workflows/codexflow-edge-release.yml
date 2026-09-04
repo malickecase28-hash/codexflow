@@ -1,0 +1,370 @@
+name: codexflow-edge-release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codexflow/phase3c-event-runtime-master-map
+      - codexflow/distribution-staging
+    paths:
+      - "codex-rs/**"
+      - "npm/codexflow-cli/**"
+      - "tools/codexflow/INSTALL_FROM_GITHUB.md"
+      - ".github/actions/setup-rusty-v8/**"
+      - ".github/workflows/codexflow-edge-release.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codexflow-edge-release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: "1.98.1"
+
+jobs:
+  linux-x64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e
+        with:
+          toolchain: "1.98.1"
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - name: Build precompiled Linux runtime
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --target x86_64-unknown-linux-gnu -p codex-cli --bin codex --bin codexflow --bin codexflow-supervisor
+          cargo build --locked --release --target x86_64-unknown-linux-gnu -p codex-code-mode-host --bin codex-code-mode-host
+
+      - name: Stage Linux release assets
+        run: |
+          set -euo pipefail
+          release="$CARGO_TARGET_DIR/x86_64-unknown-linux-gnu/release"
+          assets="$RUNNER_TEMP/assets"
+          bundle="$RUNNER_TEMP/codexflow-linux-x86_64"
+          mkdir -p "$assets" "$bundle"
+          for name in codex codexflow codexflow-supervisor codex-code-mode-host; do
+            test -x "$release/$name"
+            cp "$release/$name" "$assets/$name-linux-x64"
+            chmod 0755 "$assets/$name-linux-x64"
+            cp "$release/$name" "$bundle/$name"
+            chmod 0755 "$bundle/$name"
+          done
+          "$bundle/codex" --version
+          "$bundle/codexflow" --version
+          "$bundle/codexflow-supervisor" --version
+          tar -C "$bundle" -czf "$assets/codexflow-linux-x86_64.tar.gz" .
+          (
+            cd "$assets"
+            sha256sum codex-linux-x64 codexflow-linux-x64 codexflow-supervisor-linux-x64 codex-code-mode-host-linux-x64 codexflow-linux-x86_64.tar.gz > SHA256SUMS-linux.txt
+          )
+
+      - name: Upload Linux release assets
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: codexflow-linux-x64
+          path: ${{ runner.temp }}/assets/*
+          if-no-files-found: error
+
+  windows-x64:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e
+        with:
+          toolchain: "1.98.1"
+          targets: x86_64-pc-windows-msvc
+
+      - uses: ./.github/actions/setup-msvc-env
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - name: Build precompiled Windows runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:LIBSQLITE3_FLAGS = "SQLITE_DISABLE_INTRINSIC"
+          cargo build --locked --release --target x86_64-pc-windows-msvc -p codex-cli --bin codex --bin codexflow --bin codexflow-supervisor
+          if ($LASTEXITCODE -ne 0) { throw "CodexFlow Windows build failed" }
+          cargo build --locked --release --target x86_64-pc-windows-msvc -p codex-code-mode-host --bin codex-code-mode-host
+          if ($LASTEXITCODE -ne 0) { throw "code-mode host Windows build failed" }
+
+      - name: Stage Windows release assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $release = Join-Path $env:CARGO_TARGET_DIR "x86_64-pc-windows-msvc\release"
+          $assets = Join-Path $env:RUNNER_TEMP "assets"
+          $bundle = Join-Path $env:RUNNER_TEMP "codexflow-windows-x86_64"
+          New-Item -ItemType Directory -Force -Path $assets, $bundle | Out-Null
+          $names = @("codex", "codexflow", "codexflow-supervisor", "codex-code-mode-host")
+          foreach ($name in $names) {
+            $source = Join-Path $release "$name.exe"
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+              throw "Missing precompiled runtime binary: $source"
+            }
+            Copy-Item $source (Join-Path $assets "$name-win32-x64.exe")
+            Copy-Item $source (Join-Path $bundle "$name.exe")
+          }
+          & (Join-Path $bundle "codex.exe") --version
+          if ($LASTEXITCODE -ne 0) { throw "codex.exe smoke test failed" }
+          & (Join-Path $bundle "codexflow.exe") --version
+          if ($LASTEXITCODE -ne 0) { throw "codexflow.exe smoke test failed" }
+          & (Join-Path $bundle "codexflow-supervisor.exe") --version
+          if ($LASTEXITCODE -ne 0) { throw "codexflow-supervisor.exe smoke test failed" }
+          $archive = Join-Path $assets "codexflow-windows-x86_64.zip"
+          Compress-Archive -Path (Join-Path $bundle "*") -DestinationPath $archive -Force
+          $checksumNames = @(
+            "codex-win32-x64.exe",
+            "codexflow-win32-x64.exe",
+            "codexflow-supervisor-win32-x64.exe",
+            "codex-code-mode-host-win32-x64.exe",
+            "codexflow-windows-x86_64.zip"
+          )
+          $lines = foreach ($name in $checksumNames) {
+            $hash = (Get-FileHash (Join-Path $assets $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $name"
+          }
+          $lines | Set-Content -Encoding ASCII (Join-Path $assets "SHA256SUMS-windows.txt")
+
+      - name: Upload Windows release assets
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: codexflow-windows-x64
+          path: ${{ runner.temp }}/assets/*
+          if-no-files-found: error
+
+  npm-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: 22
+
+      - name: Validate and pack npm installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check npm/codexflow-cli/bin/runner.js
+          node --check npm/codexflow-cli/bin/codexflow.js
+          node --check npm/codexflow-cli/bin/codexflow-supervisor.js
+          node --check npm/codexflow-cli/scripts/install.js
+          mkdir -p "$RUNNER_TEMP/npm"
+          npm pack ./npm/codexflow-cli --pack-destination "$RUNNER_TEMP/npm"
+          mv "$RUNNER_TEMP/npm"/codexflow-github-*.tgz "$RUNNER_TEMP/npm/codexflow-cli.tgz"
+          tar -tzf "$RUNNER_TEMP/npm/codexflow-cli.tgz" | sort
+
+      - name: Upload npm installer
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: codexflow-npm
+          path: ${{ runner.temp }}/npm/codexflow-cli.tgz
+          if-no-files-found: error
+
+  npm-smoke-linux:
+    needs: [linux-x64, npm-package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: 22
+
+      - name: Download Linux assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: codexflow-linux-x64
+          path: ${{ runner.temp }}/assets
+
+      - name: Download npm package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: codexflow-npm
+          path: ${{ runner.temp }}/npm
+
+      - name: Install npm package from local precompiled assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/assets/SHA256SUMS-linux.txt" "$RUNNER_TEMP/assets/SHA256SUMS.txt"
+          CODEXFLOW_ASSET_DIR="$RUNNER_TEMP/assets" npm install --global --prefix "$RUNNER_TEMP/npm-prefix" "$RUNNER_TEMP/npm/codexflow-cli.tgz"
+          "$RUNNER_TEMP/npm-prefix/bin/codexflow" --version
+          "$RUNNER_TEMP/npm-prefix/bin/codexflow-supervisor" --version
+          export CODEX_HOME="$RUNNER_TEMP/codex-home"
+          mkdir -p "$CODEX_HOME"
+          "$RUNNER_TEMP/npm-prefix/bin/codexflow" doctor --json > "$RUNNER_TEMP/doctor.json"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          report = json.loads(Path(os.environ["RUNNER_TEMP"]).joinpath("doctor.json").read_text())
+          if not report.get("codex"):
+              raise SystemExit("npm-installed codexflow cannot resolve its sibling codex binary")
+          PY
+
+  npm-smoke-windows:
+    needs: [windows-x64, npm-package]
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: 22
+
+      - name: Download Windows assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: codexflow-windows-x64
+          path: ${{ runner.temp }}/assets
+
+      - name: Download npm package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: codexflow-npm
+          path: ${{ runner.temp }}/npm
+
+      - name: Install npm package from local precompiled assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Copy-Item "$env:RUNNER_TEMP\assets\SHA256SUMS-windows.txt" "$env:RUNNER_TEMP\assets\SHA256SUMS.txt"
+          $env:CODEXFLOW_ASSET_DIR = "$env:RUNNER_TEMP\assets"
+          $prefix = "$env:RUNNER_TEMP\npm-prefix"
+          npm install --global --prefix $prefix "$env:RUNNER_TEMP\npm\codexflow-cli.tgz"
+          if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+          & "$prefix\codexflow.cmd" --version
+          if ($LASTEXITCODE -ne 0) { throw "codexflow npm shim failed" }
+          & "$prefix\codexflow-supervisor.cmd" --version
+          if ($LASTEXITCODE -ne 0) { throw "codexflow-supervisor npm shim failed" }
+          $env:CODEX_HOME = "$env:RUNNER_TEMP\codex-home"
+          New-Item -ItemType Directory -Force -Path $env:CODEX_HOME | Out-Null
+          $doctor = & "$prefix\codexflow.cmd" doctor --json | ConvertFrom-Json
+          if (-not $doctor.codex) { throw "npm-installed codexflow cannot resolve its sibling codex binary" }
+
+  publish-edge-release:
+    needs: [linux-x64, windows-x64, npm-package, npm-smoke-linux, npm-smoke-windows]
+    if: github.ref == 'refs/heads/codexflow/phase3c-event-runtime-master-map'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Download Linux assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: codexflow-linux-x64
+          path: dist
+
+      - name: Download Windows assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: codexflow-windows-x64
+          path: dist
+
+      - name: Download npm package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: codexflow-npm
+          path: dist
+
+      - name: Assemble checksum manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat dist/SHA256SUMS-linux.txt dist/SHA256SUMS-windows.txt > dist/SHA256SUMS.txt
+          printf '%s  %s\n' "$(sha256sum dist/codexflow-cli.tgz | awk '{print $1}')" "codexflow-cli.tgz" >> dist/SHA256SUMS.txt
+          rm dist/SHA256SUMS-linux.txt dist/SHA256SUMS-windows.txt
+          cat dist/SHA256SUMS.txt
+
+      - name: Publish moving GitHub edge release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release delete codexflow-edge --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          gh release create codexflow-edge dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "CodexFlow Edge" \
+            --prerelease \
+            --notes "Precompiled CodexFlow edge runtime for commit $GITHUB_SHA. Install without Rust using the codexflow-cli.tgz asset."
+
+  release-smoke-linux:
+    needs: publish-edge-release
+    if: github.ref == 'refs/heads/codexflow/phase3c-event-runtime-master-map'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: 22
+
+      - name: Install from published GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/codexflow-edge/codexflow-cli.tgz"
+          npm install --global --prefix "$RUNNER_TEMP/npm-prefix" "$url"
+          "$RUNNER_TEMP/npm-prefix/bin/codexflow" --version
+          "$RUNNER_TEMP/npm-prefix/bin/codexflow-supervisor" --version
+
+  release-smoke-windows:
+    needs: publish-edge-release
+    if: github.ref == 'refs/heads/codexflow/phase3c-event-runtime-master-map'
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: 22
+
+      - name: Install from published GitHub Release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/codexflow-edge/codexflow-cli.tgz"
+          $prefix = "$env:RUNNER_TEMP\npm-prefix"
+          npm install --global --prefix $prefix $url
+          if ($LASTEXITCODE -ne 0) { throw "release npm install failed" }
+          & "$prefix\codexflow.cmd" --version
+          if ($LASTEXITCODE -ne 0) { throw "published codexflow npm shim failed" }
+          & "$prefix\codexflow-supervisor.cmd" --version
+          if ($LASTEXITCODE -ne 0) { throw "published codexflow-supervisor npm shim failed" }
