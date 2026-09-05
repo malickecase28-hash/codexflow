@@ -63,13 +63,15 @@ text = text.replace(old, new, 1)
 executable_decl = "    let executable = write_mock_agent(temp.path());\n"
 count = text.count(executable_decl)
 if count != 6:
-    raise SystemExit(f"{integration}: expected six mock executable declarations, found {count}")
+    raise SystemExit(
+        f"{integration}: expected six mock executable declarations, found {count}"
+    )
 text = text.replace(executable_decl, "")
 config_literal = re.compile(
     r"CursorAcpConfig \{\n"
     r"(?P<indent>[ \t]+)executable: Some\(executable\),\n"
     r"(?P=indent)process_cwd: Some\(temp\.path\(\)\.to_path_buf\(\)\),\n"
-    r"[ \t]+\}"
+    r"[ \t]+\}",
 )
 count = len(config_literal.findall(text))
 if count != 6:
