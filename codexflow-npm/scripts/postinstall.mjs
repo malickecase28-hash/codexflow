@@ -1,13 +1,22 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile, chmod } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import https from "node:https";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { installTransaction } from "../lib/install-transaction.mjs";
 import { binaryAssetName, resolveTarget, vendorBinaryPath } from "../lib/platform.mjs";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const packageJson = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
+const BINARY_NAMES = [
+  "codex",
+  "codexflow",
+  "codexflow-supervisor",
+  "codex-code-mode-host",
+];
+const MAX_CHECKSUM_BYTES = 4 * 1024 * 1024;
+const MAX_BINARY_BYTES = 1024 * 1024 * 1024;
 
 if (process.env.CODEXFLOW_SKIP_DOWNLOAD === "1") {
   process.exit(0);
@@ -22,22 +31,24 @@ const releaseBaseUrl =
   `https://github.com/malickecase28-hash/codexflow/releases/download/${releaseTag}`;
 const resolved = resolveTarget();
 const checksumManifest = parseChecksums(
-  (await download(`${releaseBaseUrl}/checksums.txt`)).toString("utf8"),
+  (
+    await download(`${releaseBaseUrl}/checksums.txt`, {
+      maxBytes: MAX_CHECKSUM_BYTES,
+    })
+  ).toString("utf8"),
 );
 
-for (const binaryName of [
-  "codex",
-  "codexflow",
-  "codexflow-supervisor",
-  "codex-code-mode-host",
-]) {
+const prepared = [];
+for (const binaryName of BINARY_NAMES) {
   const asset = binaryAssetName(binaryName, resolved);
   const expected = checksumManifest.get(asset);
   if (!expected) {
     throw new Error(`Release ${releaseTag} is missing a checksum for ${asset}`);
   }
 
-  const bytes = await download(`${releaseBaseUrl}/${asset}`);
+  const bytes = await download(`${releaseBaseUrl}/${asset}`, {
+    maxBytes: MAX_BINARY_BYTES,
+  });
   const actual = createHash("sha256").update(bytes).digest("hex");
   if (actual !== expected) {
     throw new Error(
@@ -45,10 +56,14 @@ for (const binaryName of [
     );
   }
 
-  const destination = vendorBinaryPath(packageRoot, binaryName, resolved);
-  await installAtomically(destination, bytes);
+  prepared.push({
+    asset,
+    bytes,
+    destination: vendorBinaryPath(packageRoot, binaryName, resolved),
+  });
 }
 
+await installTransaction(prepared);
 console.log(`CodexFlow ${packageJson.version} installed for ${resolved.target}`);
 
 function releaseTagForVersion(version) {
@@ -71,26 +86,30 @@ function parseChecksums(text) {
     if (!match) {
       throw new Error(`Invalid checksums.txt line: ${rawLine}`);
     }
-    checksums.set(match[2], match[1].toLowerCase());
+    const asset = match[2];
+    if (checksums.has(asset)) {
+      throw new Error(`Duplicate checksum entry for ${asset}`);
+    }
+    checksums.set(asset, match[1].toLowerCase());
   }
   return checksums;
 }
 
-async function installAtomically(destination, bytes) {
-  const directory = path.dirname(destination);
-  await mkdir(directory, { recursive: true });
-  const temporary = `${destination}.tmp-${process.pid}-${Date.now()}`;
-  await writeFile(temporary, bytes, { mode: 0o755 });
-  if (process.platform !== "win32") {
-    await chmod(temporary, 0o755);
-  }
-  await rm(destination, { force: true });
-  await rename(temporary, destination);
-}
-
-function download(url, redirects = 0) {
+async function download(url, { redirects = 0, maxBytes = MAX_BINARY_BYTES } = {}) {
   if (redirects > 8) {
-    return Promise.reject(new Error(`Too many redirects while downloading ${url}`));
+    throw new Error(`Too many redirects while downloading ${url}`);
+  }
+
+  const parsed = new URL(url);
+  if (parsed.protocol === "file:") {
+    const bytes = await readFile(fileURLToPath(parsed));
+    if (bytes.length > maxBytes) {
+      throw new Error(`Download exceeds ${maxBytes} bytes for ${url}`);
+    }
+    return bytes;
+  }
+  if (parsed.protocol !== "https:") {
+    throw new Error(`Unsupported download protocol ${parsed.protocol} for ${url}`);
   }
 
   return new Promise((resolve, reject) => {
@@ -108,7 +127,7 @@ function download(url, redirects = 0) {
         if (status >= 300 && status < 400 && location) {
           response.resume();
           const redirected = new URL(location, url).toString();
-          resolve(download(redirected, redirects + 1));
+          resolve(download(redirected, { redirects: redirects + 1, maxBytes }));
           return;
         }
         if (status !== 200) {
@@ -117,8 +136,23 @@ function download(url, redirects = 0) {
           return;
         }
 
+        const declaredLength = Number(response.headers["content-length"] ?? 0);
+        if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+          response.resume();
+          reject(new Error(`Download exceeds ${maxBytes} bytes for ${url}`));
+          return;
+        }
+
         const chunks = [];
-        response.on("data", (chunk) => chunks.push(chunk));
+        let received = 0;
+        response.on("data", (chunk) => {
+          received += chunk.length;
+          if (received > maxBytes) {
+            request.destroy(new Error(`Download exceeds ${maxBytes} bytes for ${url}`));
+            return;
+          }
+          chunks.push(chunk);
+        });
         response.on("end", () => resolve(Buffer.concat(chunks)));
         response.on("error", reject);
       },
