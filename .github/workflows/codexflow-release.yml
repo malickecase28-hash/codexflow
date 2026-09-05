@@ -11,6 +11,7 @@ on:
       - "codexflow-npm/**"
       - ".github/actions/setup-rusty-v8/**"
       - ".github/actions/setup-msvc-env/**"
+      - ".github/workflows/codexflow-prebuilt-windows.yml"
       - ".github/workflows/codexflow-release.yml"
   workflow_dispatch:
     inputs:
