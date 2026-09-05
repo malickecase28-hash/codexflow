@@ -24,6 +24,53 @@ jobs:
           components: rustfmt, clippy
       - name: Apply exact account removal patch
         run: python scripts/apply-runtime-harness-account-remove.py
+      - name: Harden generated patch and ACP mock fixture
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          accounts = Path("codex-rs/runtime-harness/src/accounts.rs")
+          text = accounts.read_text()
+          dead = '''    fn with_importers(
+              providers: HashMap<ProviderId, Arc<dyn Provider>>,
+              importers: HashMap<ProviderId, Arc<dyn ActiveAccountImporter>>,
+          ) -> Self {
+              Self::with_components(providers, importers, None)
+          }
+
+          '''
+          if text.count(dead) != 1:
+              raise SystemExit("expected exactly one generated with_importers helper")
+          accounts.write_text(text.replace(dead, "", 1))
+
+          test = Path("codex-rs/runtime-harness/tests/cursor_acp_mock.rs")
+          text = test.read_text()
+          old = '''fn write_mock_agent(directory: &Path) -> std::path::PathBuf {
+              let path = directory.join("mock-agent");
+              fs::write(&path, MOCK_AGENT).unwrap();
+              let mut permissions = fs::metadata(&path).unwrap().permissions();
+              permissions.set_mode(0o755);
+              fs::set_permissions(&path, permissions).unwrap();
+              path
+          }
+          '''
+          new = '''fn write_mock_agent(directory: &Path) -> std::path::PathBuf {
+              let path = directory.join("mock-agent");
+              let mut file = fs::File::create(&path).unwrap();
+              std::io::Write::write_all(&mut file, MOCK_AGENT.as_bytes()).unwrap();
+              file.sync_all().unwrap();
+              drop(file);
+              let mut permissions = fs::metadata(&path).unwrap().permissions();
+              permissions.set_mode(0o755);
+              fs::set_permissions(&path, permissions).unwrap();
+              path
+          }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit("expected exactly one mock agent writer")
+          test.write_text(text.replace(old, new, 1))
+          PY
       - name: Format
         working-directory: codex-rs/runtime-harness
         run: cargo fmt --all
