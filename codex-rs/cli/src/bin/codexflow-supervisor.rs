@@ -18,7 +18,6 @@ use std::fs::OpenOptions;
 use std::fs::TryLockError;
 use std::io::BufRead;
 use std::io::BufReader;
-use std::io::Read;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::net::TcpListener;
@@ -442,6 +441,7 @@ fn execute_request(project_root: &Path, request: WireRequest) -> Result<Value> {
     }
 }
 
+#[allow(dead_code)] // thin wrapper exercised by unit tests; dispatch uses the dedupe variant
 fn publish_event(
     project_root: &Path,
     kind: String,
@@ -499,6 +499,7 @@ fn append_or_reuse_event_unlocked(
     Ok((event, false))
 }
 
+#[allow(dead_code)] // thin wrapper exercised by unit tests; dispatch uses the timeout variant
 fn register_await(
     project_root: &Path,
     id: String,
@@ -567,6 +568,7 @@ fn register_await_with_timeout(
     })
 }
 
+#[allow(dead_code)] // thin wrapper exercised by unit tests; dispatch uses the timeout variant
 fn same_await_registration(
     existing: &AwaitSpec,
     owner: &str,
@@ -1144,6 +1146,7 @@ impl StateLock {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&path)
             .with_context(|| format!("open supervisor state lock {}", path.display()))?;
         let started = Instant::now();
@@ -1330,7 +1333,7 @@ mod tests {
     fn wire_request_rejects_oversized_and_unterminated_frames() {
         let oversized = format!("{}\n", "x".repeat(MAX_WIRE_BYTES));
         assert!(read_wire_request(oversized.as_bytes()).is_err());
-        assert!(read_wire_request(br#"{"op":"status"}"#).is_err());
+        assert!(read_wire_request(br#"{"op":"status"}"#.as_slice()).is_err());
         let valid = read_wire_request(b"{\"op\":\"status\"}\n".as_slice())
             .expect("bounded request")
             .expect("request frame");

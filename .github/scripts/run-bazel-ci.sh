@@ -300,10 +300,19 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -n "${BUI
 fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
-  # The Windows cross-compile config depends on authenticated remote
-  # execution. When credentials are unavailable, keep the local build shape
-  # and its lower concurrency cap.
-  post_config_bazel_args+=(--jobs=8)
+  # Keep the intended gnullvm target ABI even when authenticated Linux RBE is
+  # unavailable. The MSVC host runs Bazel helpers and Windows tests locally,
+  # while target crates and native dependencies resolve against the same
+  # gnullvm/LLVM-MinGW toolchain instead of mixing MSVC Rust with MinGW libs.
+  post_config_bazel_args+=(
+    --jobs=8
+    --platforms=//:windows_x86_64_gnullvm
+    --extra_toolchains=//:windows_gnullvm_tests_on_msvc_host_toolchain
+    --local_test_jobs=8
+    --test_env=RUST_TEST_THREADS=1
+    "--test_env=CODEX_BAZEL_TEST_SKIP_FILTERS=command_safety::powershell_parser::tests::,suite::code_mode::code_mode_can_call_hidden_dynamic_tools,tests::windows_tests::conpty_ctrl_c_interrupts_powershell_foreground_child"
+    --build_metadata=TAG_windows_cross_compile=true
+  )
 fi
 
 if [[ -n "${BAZEL_REPO_CONTENTS_CACHE:-}" ]]; then

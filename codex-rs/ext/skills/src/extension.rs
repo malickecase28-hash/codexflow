@@ -437,10 +437,8 @@ where
 
             let adaptive_enabled = adaptive_skill_catalog_enabled();
             let mut selection_catalog = catalog.clone();
-            if adaptive_enabled {
-                if let Some(host_skills) = host_skills.as_ref() {
-                    selection_catalog.extend(host_skills.0.clone());
-                }
+            if adaptive_enabled && let Some(host_skills) = host_skills.as_ref() {
+                selection_catalog.extend(host_skills.0.clone());
             }
             let selected_entries = collect_explicit_skill_mentions(
                 &input.user_input,
@@ -456,10 +454,8 @@ where
                 } else {
                     catalog.clone()
                 };
-                if !adaptive_enabled {
-                    if let Some(host_skills) = host_skills.as_ref() {
-                        shadow_catalog.extend(host_skills.0.clone());
-                    }
+                if !adaptive_enabled && let Some(host_skills) = host_skills.as_ref() {
+                    shadow_catalog.extend(host_skills.0.clone());
                 }
                 let shadow_selected_entries =
                     collect_explicit_skill_mentions(&input.user_input, &shadow_catalog);
