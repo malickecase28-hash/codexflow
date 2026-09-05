@@ -14,6 +14,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 
 const MOCK_AGENT: &str = r#"#!/usr/bin/env python3
 import json
@@ -47,6 +48,13 @@ for raw in sys.stdin:
         text = prompt[0].get("text", "") if prompt else ""
         if text == "crash":
             sys.exit(0)
+        if text == "wait-for-cancel":
+            while True:
+                control = json.loads(sys.stdin.readline())
+                if control.get("method") == "session/cancel":
+                    send({"jsonrpc":"2.0","id":request_id,"result":{"stopReason":"cancelled"}})
+                    break
+            continue
         send({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"mock-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello from cursor"}}}})
         send({"jsonrpc":"2.0","id":900,"method":"session/request_permission","params":{"sessionId":"mock-session","toolCall":{"toolCallId":"tool-1"},"options":[{"optionId":"allow-once","name":"Allow once"},{"optionId":"reject-once","name":"Reject"}]}})
         permission_reply = json.loads(sys.stdin.readline())
@@ -137,6 +145,50 @@ async fn cursor_acp_round_trips_stream_tool_and_permission_events() {
     }
 
     backend.cancel(&session).await.unwrap();
+    backend.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn cursor_acp_cancel_bypasses_active_prompt_serialization() {
+    let temp = tempfile::tempdir().unwrap();
+    let executable = write_mock_agent(temp.path());
+    let backend = Arc::new(
+        CursorAcpBackend::connect(CursorAcpConfig {
+            executable: Some(executable),
+            process_cwd: Some(temp.path().to_path_buf()),
+        })
+        .await
+        .unwrap(),
+    );
+    let session = backend.new_session(temp.path()).await.unwrap();
+    let collector = Arc::new(Collector::default());
+
+    let prompt_backend = Arc::clone(&backend);
+    let prompt_session = session.clone();
+    let prompt_collector = Arc::clone(&collector);
+    let prompt = tokio::spawn(async move {
+        prompt_backend
+            .prompt(
+                &prompt_session,
+                "wait-for-cancel",
+                prompt_collector,
+                Arc::new(AllowOnce),
+            )
+            .await
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::timeout(Duration::from_secs(2), backend.cancel(&session))
+        .await
+        .expect("cancel must not wait for prompt completion")
+        .unwrap();
+
+    let stop_reason = tokio::time::timeout(Duration::from_secs(2), prompt)
+        .await
+        .expect("prompt should complete after cancellation")
+        .unwrap()
+        .unwrap();
+    assert_eq!(stop_reason.as_deref(), Some("cancelled"));
     backend.shutdown().await.unwrap();
 }
 
