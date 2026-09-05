@@ -1,0 +1,98 @@
+name: codexflow-validation-package
+
+on:
+  push:
+    branches:
+      - codexflow/validation-package-release
+    paths:
+      - "codexflow-npm/**"
+      - ".github/workflows/codexflow-validation-package.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codexflow-validation-package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Package ${{ matrix.runtime }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            runtime: linux-x64
+          - runner: ubuntu-24.04-arm
+            runtime: linux-arm64
+          - runner: macos-15-intel
+            runtime: macos-x64
+          - runner: macos-15
+            runtime: macos-arm64
+          - runner: windows-latest
+            runtime: windows-x64
+          - runner: windows-11-arm
+            runtime: windows-arm64
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 22
+
+      - name: Check package JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check codexflow-npm/bin/codexflow.js
+          node --check codexflow-npm/bin/codexflow-supervisor.js
+          node --check codexflow-npm/lib/platform.mjs
+          node --check codexflow-npm/lib/launch.mjs
+          node --check codexflow-npm/lib/install-transaction.mjs
+          node --check codexflow-npm/scripts/postinstall.mjs
+          node --check codexflow-npm/scripts/smoke.mjs
+          node --check codexflow-npm/test/install-transaction.mjs
+
+      - name: Run launcher smoke tests
+        working-directory: codexflow-npm
+        run: npm test
+
+      - name: Prove transactional compiler-free installation
+        working-directory: codexflow-npm
+        run: node test/install-transaction.mjs
+
+      - name: Exercise explicit no-download development path
+        working-directory: codexflow-npm
+        env:
+          CODEXFLOW_SKIP_DOWNLOAD: "1"
+        run: node scripts/postinstall.mjs
+
+      - name: Verify install transaction module is packaged
+        working-directory: codexflow-npm
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --dry-run --json > "$RUNNER_TEMP/codexflow-pack.json"
+          node - "$RUNNER_TEMP/codexflow-pack.json" <<'NODE'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          const files = new Set(report[0].files.map((entry) => entry.path));
+          for (const required of [
+            "bin/codexflow.js",
+            "bin/codexflow-supervisor.js",
+            "lib/install-transaction.mjs",
+            "lib/launch.mjs",
+            "lib/platform.mjs",
+            "scripts/postinstall.mjs",
+          ]) {
+            if (!files.has(required)) {
+              throw new Error(`npm pack omitted ${required}`);
+            }
+          }
+          NODE
