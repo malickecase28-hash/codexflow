@@ -8,6 +8,7 @@ on:
       - .github/workflows/runtime-harness-account-remove-patch.yml
       - scripts/apply-runtime-harness-account-remove.py
       - scripts/harden-runtime-harness-account-remove.py
+      - codex-rs/runtime-harness/**
 
 permissions:
   contents: write
