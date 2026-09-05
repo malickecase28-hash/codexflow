@@ -265,6 +265,13 @@ pub enum AccountSessionWorkspaceKind {
 #[ts(export_to = "v2/")]
 pub struct LogoutAccountResponse {}
 
+/// Confirms that app-server reconciled its exact live authentication manager
+/// with the credentials currently stored in the native Codex auth store.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ReloadAccountAuthResponse {}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]

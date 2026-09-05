@@ -1200,6 +1200,14 @@ client_request_definitions! {
         response: v2::LoginAccountResponse,
     },
 
+    /// Reload the native credential store into the exact process-local AuthManager.
+    /// This carries no credentials over JSON-RPC and is serialized with login/logout.
+    ReloadAccountAuth => "account/auth/reload" {
+        params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
+        serialization: global("account-auth"),
+        response: v2::ReloadAccountAuthResponse,
+    },
+
     #[experimental("account/bedrock/discover")]
     BedrockDiscover => "account/bedrock/discover" {
         params: v2::BedrockDiscoverParams,
