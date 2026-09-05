@@ -34,10 +34,6 @@ impl RuntimeBridge {
         })
     }
 
-    pub(crate) fn harness(&self) -> Arc<RuntimeHarness> {
-        Arc::clone(&self.harness)
-    }
-
     /// Deterministically terminate any provider-owned child before app-server exits.
     pub(crate) async fn shutdown(&self) -> Result<()> {
         self.harness
