@@ -1,0 +1,54 @@
+name: Runtime harness live auth reload stage
+
+on:
+  push:
+    branches:
+      - codexflow/runtime-harness-live-auth-stage
+    paths:
+      - .github/workflows/runtime-harness-live-auth-stage.yml
+      - scripts/apply-live-auth-reload-stage.py
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codexflow/runtime-harness-live-auth-stage
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply exact live auth reload patch
+        run: python scripts/apply-live-auth-reload-stage.py
+      - name: Format
+        working-directory: codex-rs
+        run: cargo fmt --all
+      - name: Protocol tests
+        working-directory: codex-rs
+        run: cargo test -p codex-app-server-protocol
+      - name: App-server tests
+        working-directory: codex-rs
+        run: cargo test -p codex-app-server
+      - name: TUI manager-boundary regression
+        working-directory: codex-rs
+        run: cargo test -p codex-tui --test manager_dependency_regression
+      - name: Clippy affected packages
+        working-directory: codex-rs
+        run: cargo clippy -p codex-app-server-protocol -p codex-app-server -p codex-tui --all-targets -- -D warnings
+      - name: Commit validated bridge
+        shell: bash
+        run: |
+          git rm .github/workflows/runtime-harness-live-auth-stage.yml scripts/apply-live-auth-reload-stage.py
+          git add codex-rs/app-server-protocol codex-rs/app-server codex-rs/tui
+          if git diff --cached --quiet; then
+            echo "No validated source changes to commit"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "feat(runtime): expose exact live OpenAI auth reload RPC"
+          git push origin HEAD:codexflow/runtime-harness-live-auth-stage
