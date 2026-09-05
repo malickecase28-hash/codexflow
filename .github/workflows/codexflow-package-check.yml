@@ -24,8 +24,19 @@ permissions:
 
 jobs:
   package-smoke:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    name: Package smoke ${{ matrix.runtime }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            runtime: linux
+          - runner: macos-15
+            runtime: macos
+          - runner: windows-latest
+            runtime: windows
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -44,12 +55,18 @@ jobs:
           node --check codexflow-npm/bin/codexflow-supervisor.js
           node --check codexflow-npm/lib/platform.mjs
           node --check codexflow-npm/lib/launch.mjs
+          node --check codexflow-npm/lib/install-transaction.mjs
           node --check codexflow-npm/scripts/postinstall.mjs
           node --check codexflow-npm/scripts/smoke.mjs
+          node --check codexflow-npm/test/install-transaction.mjs
 
       - name: Run npm launcher smoke tests
         working-directory: codexflow-npm
         run: npm test
+
+      - name: Prove transactional compiler-free installation
+        working-directory: codexflow-npm
+        run: node test/install-transaction.mjs
 
       - name: Exercise postinstall no-download path
         working-directory: codexflow-npm
@@ -70,6 +87,7 @@ jobs:
           for (const required of [
             "bin/codexflow.js",
             "bin/codexflow-supervisor.js",
+            "lib/install-transaction.mjs",
             "lib/launch.mjs",
             "lib/platform.mjs",
             "scripts/postinstall.mjs",
