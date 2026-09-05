@@ -14,10 +14,10 @@ controller = Path("codex-rs/runtime-harness/src/controller.rs")
 
 replace_once(
     accounts,
-    '''    #[error("provider {0} does not support importing the active native login")]
+    """    #[error("provider {0} does not support importing the active native login")]
     ActiveImportUnavailable(ProviderId),
-}''',
-    '''    #[error("provider {0} does not support importing the active native login")]
+}""",
+    """    #[error("provider {0} does not support importing the active native login")]
     ActiveImportUnavailable(ProviderId),
     #[error("provider {0} account removal storage is unavailable")]
     RemovalUnavailable(ProviderId),
@@ -33,12 +33,12 @@ replace_once(
         message: String,
         rollback: String,
     },
-}''',
+}""",
 )
 
 replace_once(
     accounts,
-    '''pub struct AccountBroker {
+    """pub struct AccountBroker {
     providers: HashMap<ProviderId, Arc<dyn Provider>>,
     importers: HashMap<ProviderId, Arc<dyn ActiveAccountImporter>>,
     states: HashMap<ProviderId, Arc<ProviderAccountState>>,
@@ -64,8 +64,8 @@ impl AccountBroker {
             states,
         }
     }
-''',
-    '''struct AccountRemovalStorage {
+""",
+    """struct AccountRemovalStorage {
     registry: Arc<AccountRegistry>,
     store: Arc<dyn CredentialStore>,
 }
@@ -106,30 +106,30 @@ impl AccountBroker {
             removal_storage,
         }
     }
-''',
+""",
 )
 
 replace_once(
     accounts,
-    '''        Ok(Self::with_importers(providers, importers))
+    """        Ok(Self::with_importers(providers, importers))
     }
-''',
-    '''        Ok(Self::with_components(
+""",
+    """        Ok(Self::with_components(
             providers,
             importers,
             Some(AccountRemovalStorage { registry, store }),
         ))
     }
-''',
+""",
 )
 
 replace_once(
     accounts,
-    '''    pub async fn query_quota(
+    """    pub async fn query_quota(
         &self,
         provider: ProviderId,
-''',
-    '''    /// Remove a non-active account from embedded subswap metadata and credentials.
+""",
+    """    /// Remove a non-active account from embedded subswap metadata and credentials.
     ///
     /// Active accounts are deliberately protected: the caller must activate a
     /// replacement first so the native client and runtime cannot be left signed
@@ -223,17 +223,17 @@ replace_once(
     pub async fn query_quota(
         &self,
         provider: ProviderId,
-''',
+""",
 )
 
 replace_once(
     accounts,
-    '''}
+    """}
 
 #[cfg(test)]
 mod tests {
-''',
-    '''}
+""",
+    """}
 
 fn restore_credentials(
     storage: &AccountRemovalStorage,
@@ -258,15 +258,15 @@ fn restore_credentials(
 
 #[cfg(test)]
 mod tests {
-''',
+""",
 )
 
 replace_once(
     accounts,
-    '''    #[tokio::test]
+    """    #[tokio::test]
     async fn autoswap_never_crosses_provider_boundary() {
-''',
-    '''    #[tokio::test]
+""",
+    """    #[tokio::test]
     async fn removing_inactive_account_cleans_registry_and_credentials() {
         let directory = tempfile::tempdir().unwrap();
         let registry = Arc::new(AccountRegistry::new(directory.path().join("registry.toml")));
@@ -340,16 +340,16 @@ replace_once(
 
     #[tokio::test]
     async fn autoswap_never_crosses_provider_boundary() {
-''',
+""",
 )
 
 replace_once(
     controller,
-    '''    pub async fn quota_snapshot(
+    """    pub async fn quota_snapshot(
         &self,
         provider: ProviderId,
-''',
-    '''    /// Remove a non-active account while serializing against provider/model
+""",
+    """    /// Remove a non-active account while serializing against provider/model
     /// transitions. Active-account removal is rejected by the broker so the
     /// running native client can never be orphaned from its credential metadata.
     pub async fn remove_account(
@@ -364,5 +364,5 @@ replace_once(
     pub async fn quota_snapshot(
         &self,
         provider: ProviderId,
-''',
+""",
 )
