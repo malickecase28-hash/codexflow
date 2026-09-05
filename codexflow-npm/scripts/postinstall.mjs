@@ -1,9 +1,10 @@
-import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import https from "node:https";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { installTransaction } from "../lib/install-transaction.mjs";
 import { binaryAssetName, resolveTarget, vendorBinaryPath } from "../lib/platform.mjs";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -92,90 +93,6 @@ function parseChecksums(text) {
     checksums.set(asset, match[1].toLowerCase());
   }
   return checksums;
-}
-
-async function installTransaction(files) {
-  const token = `${process.pid}-${randomUUID()}`;
-  const stages = [];
-
-  try {
-    for (const file of files) {
-      const directory = path.dirname(file.destination);
-      await mkdir(directory, { recursive: true });
-      const temporary = `${file.destination}.tmp-${token}`;
-      const backup = `${file.destination}.bak-${token}`;
-      await writeFile(temporary, file.bytes, { mode: 0o755 });
-      if (process.platform !== "win32") {
-        await chmod(temporary, 0o755);
-      }
-      stages.push({
-        asset: file.asset,
-        destination: file.destination,
-        temporary,
-        backup,
-        hadExisting: false,
-        installed: false,
-      });
-    }
-
-    for (const stage of stages) {
-      try {
-        await rename(stage.destination, stage.backup);
-        stage.hadExisting = true;
-      } catch (error) {
-        if (error?.code !== "ENOENT") {
-          throw error;
-        }
-      }
-      await rename(stage.temporary, stage.destination);
-      stage.installed = true;
-    }
-  } catch (installError) {
-    const rollbackErrors = [];
-    for (const stage of [...stages].reverse()) {
-      try {
-        if (stage.installed) {
-          await rm(stage.destination, { force: true });
-        }
-        if (stage.hadExisting) {
-          await rename(stage.backup, stage.destination);
-        }
-      } catch (rollbackError) {
-        rollbackErrors.push(
-          new Error(`Rollback failed for ${stage.asset}: ${rollbackError.message}`, {
-            cause: rollbackError,
-          }),
-        );
-      }
-      try {
-        await rm(stage.temporary, { force: true });
-      } catch (cleanupError) {
-        rollbackErrors.push(
-          new Error(`Temporary cleanup failed for ${stage.asset}: ${cleanupError.message}`, {
-            cause: cleanupError,
-          }),
-        );
-      }
-    }
-    if (rollbackErrors.length > 0) {
-      throw new AggregateError(
-        [installError, ...rollbackErrors],
-        "CodexFlow installation failed and rollback was incomplete",
-      );
-    }
-    throw installError;
-  }
-
-  for (const stage of stages) {
-    await rm(stage.backup, { force: true }).catch((error) => {
-      console.warn(`CodexFlow warning: could not remove backup ${stage.backup}: ${error.message}`);
-    });
-    await rm(stage.temporary, { force: true }).catch((error) => {
-      console.warn(
-        `CodexFlow warning: could not remove temporary ${stage.temporary}: ${error.message}`,
-      );
-    });
-  }
 }
 
 async function download(url, { redirects = 0, maxBytes = MAX_BINARY_BYTES } = {}) {
