@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/runtime-harness-account-remove-patch.yml
       - scripts/apply-runtime-harness-account-remove.py
+      - scripts/harden-runtime-harness-account-remove.py
 
 permissions:
   contents: write
@@ -23,83 +24,9 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Apply exact account removal patch
-        run: python scripts/apply-runtime-harness-account-remove.py
-      - name: Harden account construction and ACP mock launcher
-        shell: bash
         run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          accounts = Path("codex-rs/runtime-harness/src/accounts.rs")
-          text = accounts.read_text()
-          old = "        Self::with_components(providers, HashMap::new(), None)"
-          new = "        Self::with_importers(providers, HashMap::new())"
-          if text.count(old) != 1:
-              raise SystemExit(f"expected one AccountBroker::new delegation, found {text.count(old)}")
-          accounts.write_text(text.replace(old, new, 1))
-
-          acp = Path("codex-rs/runtime-harness/src/cursor_acp.rs")
-          text = acp.read_text()
-          old = '''    pub executable: Option<PathBuf>,
-              pub process_cwd: Option<PathBuf>,
-          }'''
-          new = '''    pub executable: Option<PathBuf>,
-              /// Optional launcher arguments inserted before the required `acp`
-              /// subcommand. This supports stable wrappers/interpreters without
-              /// changing the official `agent acp` default invocation.
-              pub launcher_args: Vec<String>,
-              pub process_cwd: Option<PathBuf>,
-          }'''
-          if text.count(old) != 1:
-              raise SystemExit(f"expected one CursorAcpConfig field anchor, found {text.count(old)}")
-          text = text.replace(old, new, 1)
-          old = '''            let mut command = Command::new(&executable);
-                  command.arg("acp");'''
-          new = '''            let mut command = Command::new(&executable);
-                  command.args(&config.launcher_args);
-                  command.arg("acp");'''
-          if text.count(old) != 1:
-              raise SystemExit(f"expected one ACP command anchor, found {text.count(old)}")
-          acp.write_text(text.replace(old, new, 1))
-
-          test = Path("codex-rs/runtime-harness/tests/cursor_acp_mock.rs")
-          text = test.read_text()
-          text = text.replace("use std::os::unix::fs::PermissionsExt;\n", "")
-          old = '''fn write_mock_agent(directory: &Path) -> std::path::PathBuf {
-              let path = directory.join("mock-agent");
-              fs::write(&path, MOCK_AGENT).unwrap();
-              let mut permissions = fs::metadata(&path).unwrap().permissions();
-              permissions.set_mode(0o755);
-              fs::set_permissions(&path, permissions).unwrap();
-              path
-          }
-          '''
-          new = '''fn mock_config(directory: &Path) -> CursorAcpConfig {
-              let script = directory.join("mock-agent.py");
-              fs::write(&script, MOCK_AGENT).unwrap();
-              CursorAcpConfig {
-                  executable: Some("python3".into()),
-                  launcher_args: vec![script.to_string_lossy().into_owned()],
-                  process_cwd: Some(directory.to_path_buf()),
-              }
-          }
-          '''
-          if text.count(old) != 1:
-              raise SystemExit(f"expected one mock agent writer, found {text.count(old)}")
-          text = text.replace(old, new, 1)
-          old = "    let executable = write_mock_agent(temp.path());\n"
-          if text.count(old) != 6:
-              raise SystemExit(f"expected six mock executable declarations, found {text.count(old)}")
-          text = text.replace(old, "")
-          old = '''CursorAcpConfig {
-                  executable: Some(executable),
-                  process_cwd: Some(temp.path().to_path_buf()),
-              }'''
-          if text.count(old) != 6:
-              raise SystemExit(f"expected six mock CursorAcpConfig literals, found {text.count(old)}")
-          text = text.replace(old, "mock_config(temp.path())")
-          test.write_text(text)
-          PY
+          python scripts/apply-runtime-harness-account-remove.py
+          python scripts/harden-runtime-harness-account-remove.py
       - name: Format
         working-directory: codex-rs/runtime-harness
         run: cargo fmt --all
@@ -112,7 +39,9 @@ jobs:
       - name: Commit validated patch
         shell: bash
         run: |
-          git rm .github/workflows/runtime-harness-account-remove-patch.yml scripts/apply-runtime-harness-account-remove.py
+          git rm .github/workflows/runtime-harness-account-remove-patch.yml \
+            scripts/apply-runtime-harness-account-remove.py \
+            scripts/harden-runtime-harness-account-remove.py
           git add codex-rs/runtime-harness
           if git diff --cached --quiet; then
             echo "No validated source changes to commit"
