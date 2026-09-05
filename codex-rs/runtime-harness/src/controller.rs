@@ -29,6 +29,7 @@ use std::sync::Arc;
 use subswap_core::PolicyConfig;
 use subswap_core::PolicyDecision;
 use tokio::sync::RwLock;
+use tokio::sync::Semaphore;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeHarnessError {
@@ -53,6 +54,8 @@ pub enum RuntimeHarnessError {
         active: ProviderId,
         requested: ProviderId,
     },
+    #[error("runtime selection transition coordinator is unavailable")]
+    TransitionCoordinatorUnavailable,
 }
 
 /// Composition root for the multi-runtime harness.
@@ -70,6 +73,7 @@ pub struct RuntimeHarness {
     selection_store: RuntimeSelectionStore,
     supervisor: RuntimeSessionSupervisor,
     cursor_config: CursorAcpConfig,
+    transition_permit: Arc<Semaphore>,
 }
 
 impl RuntimeHarness {
@@ -101,6 +105,7 @@ impl RuntimeHarness {
             selection_store,
             supervisor: RuntimeSessionSupervisor::new(),
             cursor_config,
+            transition_permit: Arc::new(Semaphore::new(1)),
         })
     }
 
@@ -132,6 +137,13 @@ impl RuntimeHarness {
         self.catalog.read().await.clone()
     }
 
+    async fn acquire_transition(&self) -> Result<tokio::sync::OwnedSemaphorePermit, RuntimeHarnessError> {
+        Arc::clone(&self.transition_permit)
+            .acquire_owned()
+            .await
+            .map_err(|_| RuntimeHarnessError::TransitionCoordinatorUnavailable)
+    }
+
     pub async fn replace_openai_models(
         &self,
         models: Vec<ModelDescriptor>,
@@ -161,20 +173,22 @@ impl RuntimeHarness {
         &self,
         model: RuntimeModelId,
     ) -> Result<RuntimeSelection, RuntimeHarnessError> {
-        let mut selection = self.selection.write().await;
-        let previous = selection.clone();
+        let _transition = self.acquire_transition().await?;
+        let previous = self.selection.read().await.clone();
         let previous_provider = previous.provider();
         let mut next = previous.clone();
         next.select_provider(model);
         self.selection_store.save(&next)?;
 
-        if previous_provider != next.provider() {
-            if let Err(error) = self.router.shutdown_provider(previous_provider).await {
-                let _ = self.selection_store.save(&previous);
-                return Err(error.into());
-            }
+        if previous_provider != next.provider()
+            && let Err(error) = self.router.shutdown_provider(previous_provider).await
+        {
+            let _ = self.selection_store.save(&previous);
+            return Err(error.into());
         }
-        *selection = next.clone();
+
+        *self.selection.write().await = next.clone();
+        self.supervisor.invalidate();
         Ok(next)
     }
 
@@ -184,11 +198,13 @@ impl RuntimeHarness {
         &self,
         model: RuntimeModelId,
     ) -> Result<RuntimeSelection, RuntimeHarnessError> {
-        let mut selection = self.selection.write().await;
-        let mut next = selection.clone();
+        let _transition = self.acquire_transition().await?;
+        let current = self.selection.read().await.clone();
+        let mut next = current;
         next.select_model_within_provider(model)?;
         self.selection_store.save(&next)?;
-        *selection = next.clone();
+        *self.selection.write().await = next.clone();
+        self.supervisor.invalidate();
         Ok(next)
     }
 
@@ -200,6 +216,7 @@ impl RuntimeHarness {
         provider: ProviderId,
         account_id: impl Into<String>,
     ) -> Result<Activation, RuntimeHarnessError> {
+        let _transition = self.acquire_transition().await?;
         let current = self.selection.read().await.clone();
         if current.provider() != provider {
             return Err(RuntimeHarnessError::ProviderMismatch {
@@ -248,6 +265,7 @@ impl RuntimeHarness {
         provider: ProviderId,
         imported: &ImportedAccount,
     ) -> Result<(), RuntimeHarnessError> {
+        let _transition = self.acquire_transition().await?;
         let current = self.selection.read().await.clone();
         if current.provider() != provider {
             return Ok(());

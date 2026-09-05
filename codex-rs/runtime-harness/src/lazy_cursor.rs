@@ -9,7 +9,8 @@ use crate::types::RuntimeInteractionHandler;
 use crate::types::RuntimeSessionId;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
+use tokio::sync::Semaphore;
 
 /// Lazily owns the Cursor ACP child.
 ///
@@ -19,24 +20,37 @@ use tokio::sync::Mutex;
 /// provider-specific session state.
 pub struct LazyCursorBackend {
     config: CursorAcpConfig,
-    backend: Mutex<Option<Arc<CursorAcpBackend>>>,
+    backend: RwLock<Option<Arc<CursorAcpBackend>>>,
+    connect_permit: Arc<Semaphore>,
 }
 
 impl LazyCursorBackend {
     pub fn new(config: CursorAcpConfig) -> Self {
         Self {
             config,
-            backend: Mutex::new(None),
+            backend: RwLock::new(None),
+            connect_permit: Arc::new(Semaphore::new(1)),
         }
     }
 
     async fn backend(&self) -> Result<Arc<CursorAcpBackend>, RuntimeRouterError> {
-        let mut slot = self.backend.lock().await;
-        if let Some(backend) = slot.as_ref() {
-            return Ok(Arc::clone(backend));
+        if let Some(backend) = self.backend.read().await.as_ref().cloned() {
+            return Ok(backend);
         }
+
+        // Serialize child creation without holding a Tokio lock guard over the
+        // process-spawn/authentication await. A second waiter rechecks after it
+        // obtains the permit so only one ACP child survives initialization.
+        let _permit = Arc::clone(&self.connect_permit)
+            .acquire_owned()
+            .await
+            .map_err(|_| RuntimeRouterError::ProviderUnavailable(ProviderId::Cursor))?;
+        if let Some(backend) = self.backend.read().await.as_ref().cloned() {
+            return Ok(backend);
+        }
+
         let backend = Arc::new(CursorAcpBackend::connect(self.config.clone()).await?);
-        *slot = Some(Arc::clone(&backend));
+        *self.backend.write().await = Some(Arc::clone(&backend));
         Ok(backend)
     }
 
@@ -49,11 +63,16 @@ impl LazyCursorBackend {
     }
 
     pub async fn is_connected(&self) -> bool {
-        self.backend.lock().await.is_some()
+        self.backend.read().await.is_some()
     }
 
     async fn shutdown_inner(&self) -> Result<(), RuntimeRouterError> {
-        let backend = self.backend.lock().await.take();
+        // Do not race shutdown with a child that is still being initialized.
+        let _permit = Arc::clone(&self.connect_permit)
+            .acquire_owned()
+            .await
+            .map_err(|_| RuntimeRouterError::ProviderUnavailable(ProviderId::Cursor))?;
+        let backend = self.backend.write().await.take();
         if let Some(backend) = backend {
             backend.shutdown().await?;
         }
