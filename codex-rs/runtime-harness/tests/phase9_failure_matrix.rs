@@ -1,6 +1,6 @@
 use codex_runtime_harness::AccountBroker;
-use codex_runtime_harness::HarnessSession;
 use codex_runtime_harness::HarnessEvent;
+use codex_runtime_harness::HarnessSession;
 use codex_runtime_harness::ProviderId;
 use codex_runtime_harness::RotationRetryDisposition;
 use codex_runtime_harness::RuntimeEvent;
@@ -291,10 +291,7 @@ async fn repeated_explicit_rotations_remain_provider_scoped_and_monotonic() {
     let broker = AccountBroker::new(providers);
 
     for (expected_generation, target) in [(1, "b"), (2, "c"), (3, "a"), (4, "b")] {
-        let activation = broker
-            .activate(ProviderId::Cursor, target)
-            .await
-            .unwrap();
+        let activation = broker.activate(ProviderId::Cursor, target).await.unwrap();
         assert_eq!(activation.generation, expected_generation);
         assert_eq!(activation.provider, ProviderId::Cursor);
     }
