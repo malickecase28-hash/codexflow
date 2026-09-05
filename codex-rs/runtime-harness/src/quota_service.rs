@@ -100,12 +100,9 @@ impl QuotaService {
                 let cache = self.cache.lock().await;
                 if let Some(entry) = cache.fresh(provider_key, account_key, min_refresh) {
                     Some((entry.quotas, QuotaRefreshState::Cached))
-                } else if let Some(failure) = cache.in_failure_backoff(
-                    provider_key,
-                    account_key,
-                    min_refresh,
-                    backoff_cap,
-                ) {
+                } else if let Some(failure) =
+                    cache.in_failure_backoff(provider_key, account_key, min_refresh, backoff_cap)
+                {
                     let error = failure.error.clone();
                     match cache.get(provider_key, account_key) {
                         Some(entry) => Some((entry.quotas, QuotaRefreshState::Stale { error })),
@@ -146,7 +143,9 @@ impl QuotaService {
                     let stale = {
                         let mut cache = self.cache.lock().await;
                         cache.record_failure(provider_key, account_key, &error);
-                        let stale = cache.get(provider_key, account_key).map(|entry| entry.quotas);
+                        let stale = cache
+                            .get(provider_key, account_key)
+                            .map(|entry| entry.quotas);
                         cache.save(&self.cache_path);
                         stale
                     };
@@ -288,7 +287,10 @@ mod tests {
 
         assert_eq!(queries.load(Ordering::SeqCst), 1);
         assert!(matches!(first.accounts[0].state, QuotaRefreshState::Live));
-        assert!(matches!(second.accounts[0].state, QuotaRefreshState::Cached));
+        assert!(matches!(
+            second.accounts[0].state,
+            QuotaRefreshState::Cached
+        ));
         assert_eq!(second.accounts[0].quotas[0].used, 10);
     }
 
