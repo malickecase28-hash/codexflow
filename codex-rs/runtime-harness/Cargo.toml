@@ -1,13 +1,26 @@
 [package]
 name = "codex-runtime-harness"
-version = "0.1.0"
-edition = "2024"
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 publish = false
+
+[lints]
+workspace = true
 
 [workspace]
 
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.lints.rust]
+
+[workspace.lints.clippy]
+
 [dependencies]
+async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
