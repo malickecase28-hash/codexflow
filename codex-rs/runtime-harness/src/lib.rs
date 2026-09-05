@@ -6,6 +6,7 @@
 //! JSON-RPC stdio, while account and quota operations embed pinned subswap crates.
 
 pub mod accounts;
+pub mod auth;
 pub mod capabilities;
 pub mod cursor_acp;
 pub mod cursor_models;
@@ -21,6 +22,9 @@ pub mod types;
 pub use accounts::AccountBroker;
 pub use accounts::AccountBrokerError;
 pub use accounts::Activation;
+pub use accounts::ImportedAccount;
+pub use auth::AuthCoordinator;
+pub use auth::AuthCoordinatorError;
 pub use capabilities::ProviderCapabilities;
 pub use cursor_acp::CursorAcpBackend;
 pub use cursor_acp::CursorAcpConfig;
