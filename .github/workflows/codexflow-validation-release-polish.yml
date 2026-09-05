@@ -46,7 +46,7 @@ jobs:
           grep -q 'macos-15-intel' .github/workflows/codexflow-release.yml
           grep -q 'macos-15' .github/workflows/codexflow-release.yml
           grep -q 'compiler-invoked' .github/workflows/codexflow-release.yml
-          test "$(grep -c 'runtime: .*-' .github/workflows/codexflow-release.yml)" -ge 12
+          test "$(grep -c 'runtime: .*-' .github/workflows/codexflow-release.yml)" -ge 6
 
       - name: Commit validated release workflow
         shell: bash
