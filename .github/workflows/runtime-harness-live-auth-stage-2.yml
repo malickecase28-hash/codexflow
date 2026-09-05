@@ -1,0 +1,74 @@
+name: Runtime harness live auth reload stage 2
+
+on:
+  push:
+    branches:
+      - codexflow/runtime-harness-live-auth-stage-2
+    paths:
+      - .github/workflows/runtime-harness-live-auth-stage-2.yml
+      - scripts/apply-live-auth-reload-stage-2.py
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codexflow/runtime-harness-live-auth-stage-2
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply exact live auth reload patch
+        run: python scripts/apply-live-auth-reload-stage-2.py
+      - name: Format
+        working-directory: codex-rs
+        run: cargo fmt --all
+      - name: Diagnose direct codex-protocol edges
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          cargo metadata --format-version 1 > /tmp/metadata.json
+          python - <<'PY'
+          import json
+          data = json.load(open('/tmp/metadata.json'))
+          packages = {p['id']: p for p in data['packages']}
+          target = next(p for p in data['packages'] if p['name'] == 'codex-app-server-protocol')
+          node = next(n for n in data['resolve']['nodes'] if n['id'] == target['id'])
+          edges = []
+          for dep in node['deps']:
+              pkg = packages[dep['pkg']]
+              if pkg['name'] == 'codex-protocol':
+                  edges.append((dep['name'], dep['pkg'], dep['dep_kinds']))
+          print('codex-protocol direct edges:', edges)
+          if len(edges) != 1:
+              raise SystemExit(f'expected one codex-protocol direct edge, found {len(edges)}')
+          PY
+      - name: Protocol tests
+        working-directory: codex-rs
+        run: cargo test -p codex-app-server-protocol
+      - name: App-server tests
+        working-directory: codex-rs
+        run: cargo test -p codex-app-server
+      - name: TUI manager-boundary regression
+        working-directory: codex-rs
+        run: cargo test -p codex-tui --test manager_dependency_regression
+      - name: Clippy affected packages
+        working-directory: codex-rs
+        run: cargo clippy -p codex-app-server-protocol -p codex-app-server -p codex-tui --all-targets -- -D warnings
+      - name: Commit validated bridge
+        shell: bash
+        run: |
+          git rm .github/workflows/runtime-harness-live-auth-stage-2.yml scripts/apply-live-auth-reload-stage-2.py
+          git add codex-rs/app-server-protocol codex-rs/app-server codex-rs/tui
+          if git diff --cached --quiet; then
+            echo "No validated source changes to commit"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "feat(runtime): expose exact live OpenAI auth reload RPC"
+          git push origin HEAD:codexflow/runtime-harness-live-auth-stage-2
