@@ -29,3 +29,6 @@ tracing = "0.1"
 subswap-core = { git = "https://github.com/x0c/subswap", rev = "c839bd4de69397612d09fdc9312e03cf6e9c9e05" }
 subswap-provider-codex = { git = "https://github.com/x0c/subswap", rev = "c839bd4de69397612d09fdc9312e03cf6e9c9e05" }
 subswap-provider-cursor = { git = "https://github.com/x0c/subswap", rev = "c839bd4de69397612d09fdc9312e03cf6e9c9e05" }
+
+[dev-dependencies]
+tempfile = "3"
