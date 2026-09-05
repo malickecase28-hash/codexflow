@@ -9,11 +9,30 @@ def replace_once(path: Path, old: str, new: str) -> None:
     path.write_text(text.replace(old, new, 1))
 
 
+root = Path("codex-rs/Cargo.toml")
+replace_once(
+    root,
+    '    "rollout-trace",\n    "rmcp-client",\n',
+    '    "rollout-trace",\n    "runtime-harness",\n    "rmcp-client",\n',
+)
+replace_once(
+    root,
+    'codex-rollout-trace = { path = "rollout-trace" }\n',
+    'codex-rollout-trace = { path = "rollout-trace" }\ncodex-runtime-harness = { path = "runtime-harness" }\n',
+)
+
+harness_cargo = Path("codex-rs/runtime-harness/Cargo.toml")
+replace_once(
+    harness_cargo,
+    '''[workspace]\n\n[workspace.package]\nversion = "0.0.0"\nedition = "2024"\nlicense = "Apache-2.0"\n\n[workspace.lints.rust]\n\n[workspace.lints.clippy]\n\n''',
+    '',
+)
+
 cargo = Path("codex-rs/tui/Cargo.toml")
 replace_once(
     cargo,
     "codex-protocol = { workspace = true }\n",
-    "codex-protocol = { workspace = true }\ncodex-runtime-harness = { path = \"../runtime-harness\" }\n",
+    "codex-protocol = { workspace = true }\ncodex-runtime-harness = { workspace = true }\n",
 )
 
 lib = Path("codex-rs/tui/src/lib.rs")
