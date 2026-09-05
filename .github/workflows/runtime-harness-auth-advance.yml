@@ -1,0 +1,374 @@
+name: Runtime harness auth advance
+
+on:
+  push:
+    branches:
+      - codexflow/phase3c-event-runtime-master-map
+    paths:
+      - .github/workflows/runtime-harness-auth-advance.yml
+
+permissions:
+  contents: write
+
+jobs:
+  advance:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codexflow/phase3c-event-runtime-master-map
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - name: Add provider-native account import and auth coordination
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('codex-rs/runtime-harness/src/accounts.rs')
+          text = path.read_text()
+
+          text = text.replace(
+          '''    #[error("provider {0} account swap coordinator is unavailable")]
+              SwapCoordinatorUnavailable(ProviderId),
+          }''',
+          '''    #[error("provider {0} account swap coordinator is unavailable")]
+              SwapCoordinatorUnavailable(ProviderId),
+              #[error("provider {0} does not support importing the active native login")]
+              ActiveImportUnavailable(ProviderId),
+          }''')
+
+          text = text.replace(
+          '''pub struct Activation {
+              pub provider: ProviderId,
+              pub account_id: String,
+              pub generation: u64,
+          }
+
+          struct ProviderAccountState {''',
+          '''pub struct Activation {
+              pub provider: ProviderId,
+              pub account_id: String,
+              pub generation: u64,
+          }
+
+          #[derive(Debug, Clone)]
+          pub struct ImportedAccount {
+              pub account: Account,
+              pub generation: u64,
+          }
+
+          #[async_trait::async_trait]
+          trait ActiveAccountImporter: Send + Sync {
+              async fn import_active(
+                  &self,
+                  label_hint: Option<String>,
+              ) -> subswap_core::Result<Account>;
+          }
+
+          struct CodexActiveAccountImporter {
+              provider: Arc<subswap_provider_codex::CodexProvider>,
+          }
+
+          #[async_trait::async_trait]
+          impl ActiveAccountImporter for CodexActiveAccountImporter {
+              async fn import_active(
+                  &self,
+                  label_hint: Option<String>,
+              ) -> subswap_core::Result<Account> {
+                  let provider = Arc::clone(&self.provider);
+                  tokio::task::spawn_blocking(move || provider.import_active(label_hint))
+                      .await
+                      .map_err(|error| {
+                          subswap_core::Error::Provider(format!(
+                              "Codex active-account import task failed: {error}"
+                          ))
+                      })?
+              }
+          }
+
+          struct CursorActiveAccountImporter {
+              provider: Arc<subswap_provider_cursor::CursorProvider>,
+          }
+
+          #[async_trait::async_trait]
+          impl ActiveAccountImporter for CursorActiveAccountImporter {
+              async fn import_active(
+                  &self,
+                  label_hint: Option<String>,
+              ) -> subswap_core::Result<Account> {
+                  self.provider.import_active(label_hint).await
+              }
+          }
+
+          struct ProviderAccountState {''')
+
+          text = text.replace(
+          '''pub struct AccountBroker {
+              providers: HashMap<ProviderId, Arc<dyn Provider>>,
+              states: HashMap<ProviderId, Arc<ProviderAccountState>>,
+          }
+
+          impl AccountBroker {
+              pub fn new(providers: HashMap<ProviderId, Arc<dyn Provider>>) -> Self {
+                  let states = providers
+                      .keys()
+                      .copied()
+                      .map(|provider| (provider, Arc::new(ProviderAccountState::new())))
+                      .collect();
+                  Self { providers, states }
+              }''',
+          '''pub struct AccountBroker {
+              providers: HashMap<ProviderId, Arc<dyn Provider>>,
+              importers: HashMap<ProviderId, Arc<dyn ActiveAccountImporter>>,
+              states: HashMap<ProviderId, Arc<ProviderAccountState>>,
+          }
+
+          impl AccountBroker {
+              pub fn new(providers: HashMap<ProviderId, Arc<dyn Provider>>) -> Self {
+                  Self::with_importers(providers, HashMap::new())
+              }
+
+              fn with_importers(
+                  providers: HashMap<ProviderId, Arc<dyn Provider>>,
+                  importers: HashMap<ProviderId, Arc<dyn ActiveAccountImporter>>,
+              ) -> Self {
+                  let states = providers
+                      .keys()
+                      .copied()
+                      .map(|provider| (provider, Arc::new(ProviderAccountState::new())))
+                      .collect();
+                  Self {
+                      providers,
+                      importers,
+                      states,
+                  }
+              }''')
+
+          text = text.replace(
+          '''        let codex: Arc<dyn Provider> = Arc::new(subswap_provider_codex::new(
+                      Arc::clone(&store),
+                      Arc::clone(&registry),
+                  ));
+                  let cursor: Arc<dyn Provider> = Arc::new(subswap_provider_cursor::CursorProvider::new(
+                      Arc::clone(&store),
+                      Arc::clone(&registry),
+                  )?);
+
+                  let mut providers = HashMap::new();
+                  providers.insert(ProviderId::OpenAi, codex);
+                  providers.insert(ProviderId::Cursor, cursor);
+                  Ok(Self::new(providers))''',
+          '''        let codex = Arc::new(subswap_provider_codex::new(
+                      Arc::clone(&store),
+                      Arc::clone(&registry),
+                  ));
+                  let cursor = Arc::new(subswap_provider_cursor::CursorProvider::new(
+                      Arc::clone(&store),
+                      Arc::clone(&registry),
+                  )?);
+
+                  let mut providers: HashMap<ProviderId, Arc<dyn Provider>> = HashMap::new();
+                  providers.insert(ProviderId::OpenAi, codex.clone());
+                  providers.insert(ProviderId::Cursor, cursor.clone());
+
+                  let mut importers: HashMap<ProviderId, Arc<dyn ActiveAccountImporter>> = HashMap::new();
+                  importers.insert(
+                      ProviderId::OpenAi,
+                      Arc::new(CodexActiveAccountImporter { provider: codex }),
+                  );
+                  importers.insert(
+                      ProviderId::Cursor,
+                      Arc::new(CursorActiveAccountImporter { provider: cursor }),
+                  );
+                  Ok(Self::with_importers(providers, importers))''')
+
+          marker = '''    pub async fn query_quota(
+                  &self,
+                  provider: ProviderId,
+                  account_id: impl Into<String>,
+              ) -> Result<Vec<Quota>, AccountBrokerError> {'''
+          insert = '''    /// Import the credentials currently active in the provider's native client.
+              ///
+              /// This is the bridge used after the official Codex or Cursor login flow.
+              /// Import is serialized with account activation, and a successful import bumps
+              /// the same provider generation used to invalidate stale backend sessions.
+              pub async fn import_active(
+                  &self,
+                  provider: ProviderId,
+                  label_hint: Option<String>,
+              ) -> Result<ImportedAccount, AccountBrokerError> {
+                  let state = Arc::clone(self.state(provider)?);
+                  let importer = Arc::clone(
+                      self.importers
+                          .get(&provider)
+                          .ok_or(AccountBrokerError::ActiveImportUnavailable(provider))?,
+                  );
+                  let _permit = Arc::clone(&state.swap_permit)
+                      .acquire_owned()
+                      .await
+                      .map_err(|_| AccountBrokerError::SwapCoordinatorUnavailable(provider))?;
+                  let account = importer.import_active(label_hint).await?;
+                  let generation = state.generation.fetch_add(1, Ordering::AcqRel) + 1;
+                  Ok(ImportedAccount {
+                      account,
+                      generation,
+                  })
+              }
+
+          ''' + marker
+          if marker not in text:
+              raise SystemExit('query_quota insertion marker not found')
+          text = text.replace(marker, insert, 1)
+
+          path.write_text(text)
+
+          auth = r'''use crate::AccountBroker;
+          use crate::AccountBrokerError;
+          use crate::ImportedAccount;
+          use crate::ProviderId;
+          use std::path::PathBuf;
+          use std::process::Stdio;
+          use std::sync::Arc;
+          use tokio::process::Command;
+
+          #[derive(Debug, thiserror::Error)]
+          pub enum AuthCoordinatorError {
+              #[error("provider {0} does not have a harness-managed login command")]
+              LoginUnsupported(ProviderId),
+              #[error("Cursor CLI agent was not found; install Cursor CLI or set CODEX_CURSOR_AGENT")]
+              CursorAgentUnavailable,
+              #[error("failed to launch {executable} login: {source}")]
+              LoginSpawn {
+                  executable: String,
+                  #[source]
+                  source: std::io::Error,
+              },
+              #[error("{provider} login exited unsuccessfully with {status}")]
+              LoginFailed { provider: ProviderId, status: String },
+              #[error(transparent)]
+              Account(#[from] AccountBrokerError),
+          }
+
+          /// Coordinates provider-native authentication without implementing OAuth itself.
+          ///
+          /// OpenAI login remains owned by the existing Codex UI: once that flow succeeds,
+          /// call `import_after_native_login(ProviderId::OpenAi, ...)`. Cursor login can be
+          /// initiated here using the official `agent login` command, after which the active
+          /// native credentials are imported through embedded subswap.
+          pub struct AuthCoordinator {
+              broker: Arc<AccountBroker>,
+              cursor_executable: Option<PathBuf>,
+          }
+
+          impl AuthCoordinator {
+              pub fn new(broker: Arc<AccountBroker>) -> Self {
+                  Self {
+                      broker,
+                      cursor_executable: None,
+                  }
+              }
+
+              pub fn with_cursor_executable(
+                  broker: Arc<AccountBroker>,
+                  executable: impl Into<PathBuf>,
+              ) -> Self {
+                  Self {
+                      broker,
+                      cursor_executable: Some(executable.into()),
+                  }
+              }
+
+              pub async fn import_after_native_login(
+                  &self,
+                  provider: ProviderId,
+                  label_hint: Option<String>,
+              ) -> Result<ImportedAccount, AuthCoordinatorError> {
+                  Ok(self.broker.import_active(provider, label_hint).await?)
+              }
+
+              pub async fn login_cursor(
+                  &self,
+                  label_hint: Option<String>,
+              ) -> Result<ImportedAccount, AuthCoordinatorError> {
+                  let status = self.run_cursor_login().await?;
+                  if !status.success() {
+                      return Err(AuthCoordinatorError::LoginFailed {
+                          provider: ProviderId::Cursor,
+                          status: status.to_string(),
+                      });
+                  }
+                  self.import_after_native_login(ProviderId::Cursor, label_hint)
+                      .await
+              }
+
+              async fn run_cursor_login(
+                  &self,
+              ) -> Result<std::process::ExitStatus, AuthCoordinatorError> {
+                  let mut candidates = Vec::new();
+                  if let Some(executable) = self.cursor_executable.clone() {
+                      candidates.push(executable);
+                  } else if let Some(executable) = std::env::var_os("CODEX_CURSOR_AGENT") {
+                      candidates.push(PathBuf::from(executable));
+                  }
+                  if self.cursor_executable.is_none() {
+                      candidates.push(PathBuf::from("agent"));
+                      candidates.push(PathBuf::from("cursor-agent"));
+                  }
+
+                  for executable in candidates {
+                      let mut command = Command::new(&executable);
+                      command
+                          .arg("login")
+                          .stdin(Stdio::inherit())
+                          .stdout(Stdio::inherit())
+                          .stderr(Stdio::inherit());
+                      match command.status().await {
+                          Ok(status) => return Ok(status),
+                          Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                          Err(source) => {
+                              return Err(AuthCoordinatorError::LoginSpawn {
+                                  executable: executable.display().to_string(),
+                                  source,
+                              });
+                          }
+                      }
+                  }
+                  Err(AuthCoordinatorError::CursorAgentUnavailable)
+              }
+          }
+          '''
+          Path('codex-rs/runtime-harness/src/auth.rs').write_text(auth)
+
+          lib = Path('codex-rs/runtime-harness/src/lib.rs')
+          lib_text = lib.read_text()
+          if 'pub mod auth;\n' not in lib_text:
+              lib_text = lib_text.replace('pub mod accounts;\n', 'pub mod accounts;\npub mod auth;\n', 1)
+          if 'pub use accounts::ImportedAccount;\n' not in lib_text:
+              lib_text = lib_text.replace('pub use accounts::Activation;\n', 'pub use accounts::Activation;\npub use accounts::ImportedAccount;\n', 1)
+          if 'pub use auth::AuthCoordinator;\n' not in lib_text:
+              lib_text = lib_text.replace('pub use capabilities::ProviderCapabilities;\n', 'pub use auth::AuthCoordinator;\npub use auth::AuthCoordinatorError;\npub use capabilities::ProviderCapabilities;\n', 1)
+          lib.write_text(lib_text)
+          PY
+      - name: Validate runtime harness
+        working-directory: codex-rs/runtime-harness
+        run: |
+          cargo fmt
+          cargo test
+          cargo clippy --all-targets -- -D warnings
+          cargo fmt --check
+      - name: Commit validated advance and remove one-shot workflow
+        shell: bash
+        run: |
+          git rm .github/workflows/runtime-harness-auth-advance.yml
+          git add codex-rs/runtime-harness
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "feat(runtime-harness): integrate native account login imports"
+          git push origin HEAD:codexflow/phase3c-event-runtime-master-map
