@@ -9,7 +9,7 @@ on:
       - ".github/workflows/codexflow-validation-release-polish.yml"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: codexflow-validation-release-polish-${{ github.ref }}
@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          persist-credentials: true
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Materialize release workflow polish
@@ -48,16 +48,6 @@ jobs:
           grep -q 'compiler-invoked' .github/workflows/codexflow-release.yml
           test "$(grep -c 'runtime: .*-' .github/workflows/codexflow-release.yml)" -ge 6
 
-      - name: Commit validated release workflow
+      - name: Show materialized release diff
         shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/workflows/codexflow-release.yml
-          if git diff --cached --quiet; then
-            echo "No materialized release diff"
-          else
-            git commit -m "validation: materialize cached six-target release"
-            git push origin HEAD:codexflow/validation-package-release
-          fi
+        run: git diff -- .github/workflows/codexflow-release.yml
