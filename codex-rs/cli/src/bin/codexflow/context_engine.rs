@@ -729,8 +729,7 @@ fn replace_file(tmp: &Path, destination: &Path) -> Result<()> {
         fs::remove_file(destination)
             .with_context(|| format!("remove {}", destination.display()))?;
     }
-    fs::rename(tmp, destination)
-        .with_context(|| format!("replace {}", destination.display()))
+    fs::rename(tmp, destination).with_context(|| format!("replace {}", destination.display()))
 }
 
 fn git_output(project_root: &Path, args: &[&str]) -> Option<String> {
@@ -938,11 +937,7 @@ mod tests {
 
         let map = build_project_map(temp.path(), 100).expect("map");
         assert!(map.entries.iter().any(|entry| entry == "src/"));
-        assert!(
-            !map.entries
-                .iter()
-                .any(|entry| entry.starts_with("target/"))
-        );
+        assert!(!map.entries.iter().any(|entry| entry.starts_with("target/")));
     }
 
     #[test]
@@ -962,15 +957,16 @@ mod tests {
         assert_eq!(snapshot.languages.get("python"), Some(&1));
         assert_eq!(snapshot.file_count, 3);
         assert!(snapshot.top_level.iter().any(|entry| entry == "src/"));
-        assert!(snapshot.dirty_paths.iter().any(|entry| entry == "scratch.py"));
+        assert!(
+            snapshot
+                .dirty_paths
+                .iter()
+                .any(|entry| entry == "scratch.py")
+        );
 
         let map = build_project_map(temp.path(), 100).expect("map");
         assert!(map.entries.iter().any(|entry| entry == "scratch.py"));
-        assert!(
-            !map.entries
-                .iter()
-                .any(|entry| entry.starts_with("target/"))
-        );
+        assert!(!map.entries.iter().any(|entry| entry.starts_with("target/")));
     }
 
     #[test]

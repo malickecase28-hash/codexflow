@@ -48,11 +48,8 @@ fn build_from_events(events: &[Value]) -> Result<RecoveryReport> {
             .and_then(Value::as_object)
             .with_context(|| format!("recovery event {} is missing decision object", index + 1))?;
         let failure_class = required_str(decision.get("failure_class"), "failure_class", index)?;
-        let current_profile = required_profile(
-            decision.get("current_profile"),
-            "current_profile",
-            index,
-        )?;
+        let current_profile =
+            required_profile(decision.get("current_profile"), "current_profile", index)?;
         let next_profile = required_profile(decision.get("next_profile"), "next_profile", index)?;
         let verification_depth = required_str(
             decision.get("verification_depth"),
@@ -132,11 +129,7 @@ fn required_bool(value: Option<&Value>, field: &str, index: usize) -> Result<boo
         .with_context(|| format!("recovery event {} has invalid {field}", index + 1))
 }
 
-fn required_profile<'a>(
-    value: Option<&'a Value>,
-    field: &str,
-    index: usize,
-) -> Result<&'a str> {
+fn required_profile<'a>(value: Option<&'a Value>, field: &str, index: usize) -> Result<&'a str> {
     let profile = required_str(value, field, index)?;
     profile_rank_checked(profile).with_context(|| {
         format!(
@@ -202,15 +195,7 @@ mod tests {
     fn aggregates_recovery_trajectory_metrics() {
         let events = vec![
             event(
-                "test",
-                "fast",
-                "balanced",
-                true,
-                true,
-                false,
-                true,
-                false,
-                "standard",
+                "test", "fast", "balanced", true, true, false, true, false, "standard",
             ),
             event(
                 "permission",
@@ -233,10 +218,7 @@ mod tests {
         assert_eq!(report.human_gates, 1);
         assert_eq!(report.escalations, 1);
         assert_eq!(report.failure_counts.get("test"), Some(&1));
-        assert_eq!(
-            report.profile_transitions.get("fast->balanced"),
-            Some(&1)
-        );
+        assert_eq!(report.profile_transitions.get("fast->balanced"), Some(&1));
     }
 
     #[test]

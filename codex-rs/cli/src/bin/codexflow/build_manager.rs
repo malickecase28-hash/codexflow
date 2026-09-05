@@ -253,7 +253,11 @@ fn verify(project_root: &Path, check_only: bool, cargo_args: &[OsString]) -> Res
         )?);
     }
     let success = steps.iter().all(|step| step.success);
-    let evidence_path = verification_path(project_root, created_at.timestamp_millis(), git_head.as_deref());
+    let evidence_path = verification_path(
+        project_root,
+        created_at.timestamp_millis(),
+        git_head.as_deref(),
+    );
     let report = VerificationReport {
         schema: "codexflow.build-verification.v1",
         created_at: created_at.to_rfc3339_opts(SecondsFormat::Millis, true),
@@ -308,7 +312,9 @@ fn run_cargo_evidence(
     );
     eprintln!("CodexFlow verify: {:?}", command);
     let started = Instant::now();
-    let status = command.status().with_context(|| format!("run cargo {subcommand}"))?;
+    let status = command
+        .status()
+        .with_context(|| format!("run cargo {subcommand}"))?;
     Ok(VerificationStep {
         name: format!("cargo_{subcommand}"),
         argv,
@@ -469,11 +475,7 @@ mod tests {
     #[test]
     fn verification_path_is_bounded_and_revision_scoped() {
         let root = Path::new("/tmp/project");
-        let path = verification_path(
-            root,
-            1234,
-            Some("0123456789abcdef0123456789abcdef01234567"),
-        );
+        let path = verification_path(root, 1234, Some("0123456789abcdef0123456789abcdef01234567"));
         assert!(path.ends_with(".codexflow/evidence/build/1234-0123456789ab.json"));
     }
 

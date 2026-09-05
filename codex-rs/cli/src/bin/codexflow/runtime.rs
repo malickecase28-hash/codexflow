@@ -349,7 +349,8 @@ pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
                 .tasks
                 .get_mut(&id)
                 .with_context(|| format!("unknown task: {id}"))?;
-            let criterion_id = criterion.unwrap_or_else(|| format!("ac-{}", task.acceptance.len() + 1));
+            let criterion_id =
+                criterion.unwrap_or_else(|| format!("ac-{}", task.acceptance.len() + 1));
             validate_id(&criterion_id)?;
             if task.acceptance.iter().any(|item| item.id == criterion_id) {
                 bail!("acceptance criterion already exists: {criterion_id}");
@@ -388,7 +389,9 @@ pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
                 .acceptance
                 .iter_mut()
                 .find(|item| item.id == criterion)
-                .with_context(|| format!("unknown acceptance criterion {criterion} for task {id}"))?;
+                .with_context(|| {
+                    format!("unknown acceptance criterion {criterion} for task {id}")
+                })?;
             if !item.evidence.iter().any(|existing| existing == &evidence) {
                 item.evidence.push(evidence.clone());
             }
@@ -1137,7 +1140,9 @@ mod tests {
 
         let task = ledger.tasks.get_mut("task-a").expect("task");
         task.acceptance[0].status = "pass".to_string();
-        task.acceptance[0].evidence.push("cargo test: pass".to_string());
+        task.acceptance[0]
+            .evidence
+            .push("cargo test: pass".to_string());
         assert!(
             completion_blockers(&ledger, "task-a")
                 .expect("check ready")
@@ -1150,7 +1155,9 @@ mod tests {
         let mut ledger = default_ledger(Path::new("/demo"));
         let mut task = task_with_acceptance("integration passes");
         task.acceptance[0].status = "pass".to_string();
-        task.acceptance[0].evidence.push("integration suite".to_string());
+        task.acceptance[0]
+            .evidence
+            .push("integration suite".to_string());
         task.depends_on.push("dep".to_string());
         task.gates.insert(
             "security".to_string(),

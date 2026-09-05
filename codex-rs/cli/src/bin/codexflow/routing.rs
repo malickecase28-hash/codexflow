@@ -230,13 +230,8 @@ pub fn handle(project_root: &Path, args: RoutingArgs) -> Result<()> {
             profile,
             detail,
         } => {
-            let decision = resolve_recovery(
-                project_root,
-                &failure,
-                attempt,
-                profile.as_deref(),
-                detail,
-            )?;
+            let decision =
+                resolve_recovery(project_root, &failure, attempt, profile.as_deref(), detail)?;
             recovery_ledger::append(project_root, &decision)?;
             println!("{}", serde_json::to_string_pretty(&decision)?);
             Ok(())
@@ -291,7 +286,10 @@ pub fn resolve_route(
         profile: profile_name.to_string(),
         difficulty_score,
         factors,
-        model: profile.model.clone().filter(|value| !value.trim().is_empty()),
+        model: profile
+            .model
+            .clone()
+            .filter(|value| !value.trim().is_empty()),
         reasoning_effort: profile.reasoning_effort.clone(),
         max_context_chars: profile.max_context_chars.clamp(2_000, 64_000),
         max_tool_calls: profile.max_tool_calls.max(1),
@@ -435,9 +433,10 @@ pub fn apply_route_to_codex_command(
         command.arg("-m").arg(model);
     }
     if !user_overrides_reasoning_effort(user_args) {
-        command
-            .arg("-c")
-            .arg(format!("model_reasoning_effort={}", decision.reasoning_effort));
+        command.arg("-c").arg(format!(
+            "model_reasoning_effort={}",
+            decision.reasoning_effort
+        ));
     }
     command
         .env("CODEXFLOW_ROUTE_PROFILE", &decision.profile)
@@ -445,10 +444,7 @@ pub fn apply_route_to_codex_command(
             "CODEXFLOW_DIFFICULTY_SCORE",
             decision.difficulty_score.to_string(),
         )
-        .env(
-            "CODEXFLOW_TOOL_BUDGET",
-            decision.max_tool_calls.to_string(),
-        )
+        .env("CODEXFLOW_TOOL_BUDGET", decision.max_tool_calls.to_string())
         .env("CODEXFLOW_RETRY_BUDGET", decision.max_retries.to_string())
         .env(
             "CODEXFLOW_CANDIDATE_BUDGET",
@@ -493,7 +489,16 @@ fn classify_task(task: &str) -> (u32, Vec<String>) {
     }
     if contains_any(
         &lower,
-        &["bug", "fix", "test", "implement", "feature", "cli", "api", "parser"],
+        &[
+            "bug",
+            "fix",
+            "test",
+            "implement",
+            "feature",
+            "cli",
+            "api",
+            "parser",
+        ],
     ) {
         score = score.saturating_add(1);
         factors.push("implementation or debugging work".to_string());
@@ -634,8 +639,7 @@ fn validate_profile(profile: &RouteProfile) -> Result<()> {
     if profile.candidate_count == 0 || profile.candidate_count > 32 {
         bail!("candidate_count must be between 1 and 32");
     }
-    if !["focused", "standard", "deep", "exhaustive"]
-        .contains(&profile.verification_depth.as_str())
+    if !["focused", "standard", "deep", "exhaustive"].contains(&profile.verification_depth.as_str())
     {
         bail!("verification_depth must be focused, standard, deep, or exhaustive");
     }
@@ -734,9 +738,8 @@ mod tests {
 
     #[test]
     fn concurrency_security_task_routes_critical() {
-        let (score, factors) = classify_task(
-            "fix production authentication concurrency and credential handling",
-        );
+        let (score, factors) =
+            classify_task("fix production authentication concurrency and credential handling");
         assert_eq!(profile_for_score(score), PROFILE_CRITICAL);
         assert!(
             factors
@@ -779,14 +782,8 @@ mod tests {
     fn permission_and_ambiguity_never_blindly_retry() {
         let temp = tempfile::tempdir().expect("tempdir");
         for failure in [FAILURE_PERMISSION, FAILURE_AMBIGUOUS_REQUIREMENT] {
-            let decision = resolve_recovery(
-                temp.path(),
-                failure,
-                1,
-                Some(PROFILE_BALANCED),
-                None,
-            )
-            .expect("recovery");
+            let decision = resolve_recovery(temp.path(), failure, 1, Some(PROFILE_BALANCED), None)
+                .expect("recovery");
             assert!(!decision.retry_allowed);
             assert!(decision.human_approval);
             assert!(!decision.strategy_change);
@@ -796,14 +793,8 @@ mod tests {
     #[test]
     fn repeated_test_failure_recommends_rollback_and_deeper_verification() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let decision = resolve_recovery(
-            temp.path(),
-            FAILURE_TEST,
-            2,
-            Some(PROFILE_DEEP),
-            None,
-        )
-        .expect("recovery");
+        let decision = resolve_recovery(temp.path(), FAILURE_TEST, 2, Some(PROFILE_DEEP), None)
+            .expect("recovery");
         assert_eq!(decision.next_profile, PROFILE_CRITICAL);
         assert!(decision.rollback_recommended);
         assert_eq!(decision.verification_depth, "exhaustive");

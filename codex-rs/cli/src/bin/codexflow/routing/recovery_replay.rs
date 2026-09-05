@@ -51,10 +51,8 @@ pub(super) fn replay(project_root: &Path, offset_from_latest: usize) -> Result<R
         .and_then(Value::as_u64)
         .context("recovery decision has invalid attempt")?;
     let attempt = u32::try_from(attempt).context("recovery decision attempt exceeds u32")?;
-    let current_profile = required_str(
-        recorded_decision.get("current_profile"),
-        "current_profile",
-    )?;
+    let current_profile =
+        required_str(recorded_decision.get("current_profile"), "current_profile")?;
     let detail = match recorded_decision.get("detail") {
         Some(Value::String(value)) => Some(value.clone()),
         Some(Value::Null) | None => None,
@@ -146,8 +144,11 @@ mod tests {
         policy.escalation_failure_threshold = 5;
         let path = super::super::policy_path(temp.path());
         fs::create_dir_all(path.parent().expect("policy parent")).expect("create policy parent");
-        fs::write(&path, serde_json::to_vec_pretty(&policy).expect("serialize policy"))
-            .expect("write policy");
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&policy).expect("serialize policy"),
+        )
+        .expect("write policy");
 
         let replay = replay(temp.path(), 0).expect("replay");
         assert!(!replay.matches_current_policy);

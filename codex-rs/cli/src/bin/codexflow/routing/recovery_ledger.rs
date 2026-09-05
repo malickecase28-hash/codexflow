@@ -23,8 +23,7 @@ const MAX_HISTORY_LIMIT: usize = 1_000;
 
 pub(super) fn append(project_root: &Path, decision: &RecoveryDecision) -> Result<()> {
     let state_dir = recovery_state_dir(project_root);
-    fs::create_dir_all(&state_dir)
-        .with_context(|| format!("create {}", state_dir.display()))?;
+    fs::create_dir_all(&state_dir).with_context(|| format!("create {}", state_dir.display()))?;
     let _guard = RecoveryLock::acquire(&state_dir)?;
 
     let event = serde_json::json!({
@@ -55,8 +54,7 @@ pub(super) fn history(project_root: &Path, limit: usize) -> Result<Vec<Value>> {
     }
 
     let state_dir = recovery_state_dir(project_root);
-    fs::create_dir_all(&state_dir)
-        .with_context(|| format!("create {}", state_dir.display()))?;
+    fs::create_dir_all(&state_dir).with_context(|| format!("create {}", state_dir.display()))?;
     let _guard = RecoveryLock::acquire(&state_dir)?;
 
     let path = recovery_history_path(project_root);
@@ -253,7 +251,10 @@ mod tests {
         let decision = sample_decision(temp.path());
         append(temp.path(), &decision).expect("append recovery event");
         let path = recovery_history_path(temp.path());
-        let mut file = OpenOptions::new().append(true).open(&path).expect("open history");
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open history");
         file.write_all(b"{\"schema\":").expect("write torn tail");
         file.sync_data().expect("sync torn tail");
 
@@ -270,7 +271,10 @@ mod tests {
         let decision = sample_decision(temp.path());
         append(temp.path(), &decision).expect("append recovery event");
         let path = recovery_history_path(temp.path());
-        let file = OpenOptions::new().write(true).open(&path).expect("open history");
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open history");
         let len = file.metadata().expect("history metadata").len();
         file.set_len(len - 1).expect("remove final newline");
         file.sync_data().expect("sync history");

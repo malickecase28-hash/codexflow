@@ -8,17 +8,23 @@ use clap::Subcommand;
 use serde::Deserialize;
 use serde::Serialize;
 use std::fs;
+use std::fs::File;
+use std::fs::OpenOptions;
+use std::fs::TryLockError;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 
 const LEASE_SCHEMA: &str = "codexflow.lease.v1";
 const MIN_TTL_SECONDS: u64 = 30;
 const MAX_TTL_SECONDS: u64 = 86_400;
 const METADATA_RETRY_COUNT: usize = 4;
 const METADATA_RETRY_DELAY: Duration = Duration::from_millis(8);
+const LOCK_RETRY_DELAY: Duration = Duration::from_millis(10);
+const LOCK_WAIT_LIMIT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Args)]
 pub struct LeaseArgs {
@@ -124,6 +130,20 @@ fn acquire(
     ttl_seconds: u64,
 ) -> Result<LeaseRecord> {
     validate_token(scope, "lease scope")?;
+    let base = lease_base_dir(project_root)?;
+    fs::create_dir_all(&base).with_context(|| format!("create {}", base.display()))?;
+    let _guard = ScopeMutationLock::acquire(&base, scope)?;
+    acquire_unlocked(project_root, scope, owner, task, ttl_seconds)
+}
+
+fn acquire_unlocked(
+    project_root: &Path,
+    scope: &str,
+    owner: &str,
+    task: Option<&str>,
+    ttl_seconds: u64,
+) -> Result<LeaseRecord> {
+    validate_token(scope, "lease scope")?;
     validate_token(owner, "lease owner")?;
     if let Some(task) = task {
         validate_token(task, "task id")?;
@@ -161,7 +181,7 @@ fn acquire(
                     )
                 })?;
                 if existing.owner == owner && !expired(&existing) {
-                    return renew(project_root, scope, owner, ttl_seconds);
+                    return renew_unlocked(project_root, scope, owner, ttl_seconds);
                 }
                 if expired(&existing) {
                     match fs::remove_dir_all(&scope_dir) {
@@ -192,7 +212,14 @@ fn acquire(
     bail!("lease {scope} changed repeatedly while acquiring; retry the operation")
 }
 
-fn renew(
+fn renew(project_root: &Path, scope: &str, owner: &str, ttl_seconds: u64) -> Result<LeaseRecord> {
+    validate_token(scope, "lease scope")?;
+    let base = lease_base_dir(project_root)?;
+    let _guard = ScopeMutationLock::acquire(&base, scope)?;
+    renew_unlocked(project_root, scope, owner, ttl_seconds)
+}
+
+fn renew_unlocked(
     project_root: &Path,
     scope: &str,
     owner: &str,
@@ -220,6 +247,13 @@ fn renew(
 }
 
 fn release(project_root: &Path, scope: &str, owner: &str) -> Result<()> {
+    validate_token(scope, "lease scope")?;
+    let base = lease_base_dir(project_root)?;
+    let _guard = ScopeMutationLock::acquire(&base, scope)?;
+    release_unlocked(project_root, scope, owner)
+}
+
+fn release_unlocked(project_root: &Path, scope: &str, owner: &str) -> Result<()> {
     validate_token(scope, "lease scope")?;
     validate_token(owner, "lease owner")?;
     let base = lease_base_dir(project_root)?;
@@ -273,23 +307,84 @@ fn prune(project_root: &Path) -> Result<Vec<String>> {
         if !scope_dir.is_dir() {
             continue;
         }
+        let Some(scope_name) = scope_dir
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        if validate_token(&scope_name, "lease scope").is_err() {
+            continue;
+        }
+        let _guard = ScopeMutationLock::acquire(&base, &scope_name)?;
+        if !scope_dir.is_dir() {
+            continue;
+        }
         let lease = match load_record_retry(&scope_dir) {
             Ok(lease) => lease,
             Err(_) => continue,
         };
+        if lease.scope != scope_name {
+            continue;
+        }
         if expired(&lease) {
             match fs::remove_dir_all(&scope_dir) {
                 Ok(()) => removed.push(lease.scope),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => {
-                    return Err(error)
-                        .with_context(|| format!("remove {}", scope_dir.display()));
+                    return Err(error).with_context(|| format!("remove {}", scope_dir.display()));
                 }
             }
         }
     }
     removed.sort();
     Ok(removed)
+}
+
+struct ScopeMutationLock {
+    _file: File,
+}
+
+impl ScopeMutationLock {
+    fn acquire(base: &Path, scope: &str) -> Result<Self> {
+        let lock_root = base.join(".locks");
+        fs::create_dir_all(&lock_root)
+            .with_context(|| format!("create {}", lock_root.display()))?;
+        let path = lock_root.join(format!("{scope}.lock"));
+        if path.is_dir() {
+            bail!(
+                "legacy lease mutation lock directory {}; remove it after confirming no older CodexFlow process is active",
+                path.display()
+            );
+        }
+
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&path)
+            .with_context(|| format!("open lease mutation lock {}", path.display()))?;
+        let started = Instant::now();
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Self { _file: file }),
+                Err(TryLockError::WouldBlock) => {
+                    if started.elapsed() > LOCK_WAIT_LIMIT {
+                        bail!(
+                            "timed out waiting for lease mutation lock {}",
+                            path.display()
+                        );
+                    }
+                    thread::sleep(LOCK_RETRY_DELAY);
+                }
+                Err(TryLockError::Error(error)) => {
+                    return Err(error)
+                        .with_context(|| format!("lock lease mutation state {}", path.display()));
+                }
+            }
+        }
+    }
 }
 
 fn lease_base_dir(project_root: &Path) -> Result<PathBuf> {
@@ -366,9 +461,7 @@ fn validate_token(value: &str, label: &str) -> Result<()> {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-'
         })
     {
-        bail!(
-            "invalid {label} {value:?}; use lowercase letters, digits, _ or -, max 64 chars"
-        );
+        bail!("invalid {label} {value:?}; use lowercase letters, digits, _ or -, max 64 chars");
     }
     Ok(())
 }
@@ -403,20 +496,21 @@ fn git_output(project_root: &Path, args: &[&str]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
 
     #[test]
     fn scope_directory_is_exclusive_until_release() {
         let temp = tempfile::tempdir().expect("tempdir");
         init_repo(temp.path());
-        let first = acquire(temp.path(), "task-demo", "worker-a", Some("demo"), 300)
-            .expect("first lease");
+        let first =
+            acquire(temp.path(), "task-demo", "worker-a", Some("demo"), 300).expect("first lease");
         assert_eq!(first.owner, "worker-a");
         let error = acquire(temp.path(), "task-demo", "worker-b", Some("demo"), 300)
             .expect_err("second owner must be blocked");
         assert!(error.to_string().contains("held by worker-a"));
         release(temp.path(), "task-demo", "worker-a").expect("release");
-        let second = acquire(temp.path(), "task-demo", "worker-b", Some("demo"), 300)
-            .expect("second lease");
+        let second =
+            acquire(temp.path(), "task-demo", "worker-b", Some("demo"), 300).expect("second lease");
         assert_eq!(second.owner, "worker-b");
     }
 
@@ -437,8 +531,8 @@ mod tests {
             expires_at_ms: 1,
         };
         atomic_write_record(&record_path(&scope), &expired_record).expect("expired record");
-        let lease = acquire(temp.path(), "task-demo", "worker-b", Some("demo"), 300)
-            .expect("reclaim");
+        let lease =
+            acquire(temp.path(), "task-demo", "worker-b", Some("demo"), 300).expect("reclaim");
         assert_eq!(lease.owner, "worker-b");
     }
 
@@ -452,6 +546,65 @@ mod tests {
         let renewed = renew(temp.path(), "task-demo", "worker-a", 600).expect("renew");
         assert!(scope.is_dir());
         assert_eq!(renewed.owner, "worker-a");
+    }
+
+    #[test]
+    fn scope_mutation_lock_serializes_same_scope() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        init_repo(temp.path());
+        let base = lease_base_dir(temp.path()).expect("base");
+        fs::create_dir_all(&base).expect("base dir");
+        let first = ScopeMutationLock::acquire(&base, "task-demo").expect("first lock");
+        let worker_base = base.clone();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            ready_tx.send(()).expect("signal ready");
+            let _second =
+                ScopeMutationLock::acquire(&worker_base, "task-demo").expect("second lock");
+            acquired_tx.send(()).expect("signal acquired");
+        });
+
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("worker ready");
+        assert!(
+            acquired_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err()
+        );
+        drop(first);
+        acquired_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("worker acquired after release");
+        worker.join().expect("worker join");
+    }
+
+    #[test]
+    fn previous_owner_cannot_release_reacquired_scope() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        init_repo(temp.path());
+        let base = lease_base_dir(temp.path()).expect("base");
+        let scope = scope_dir(&base, "task-demo");
+        fs::create_dir_all(&scope).expect("scope dir");
+        let expired_record = LeaseRecord {
+            schema: LEASE_SCHEMA.to_string(),
+            scope: "task-demo".to_string(),
+            owner: "worker-a".to_string(),
+            task: Some("demo".to_string()),
+            acquired_at: "2020-01-01T00:00:00Z".to_string(),
+            renewed_at: "2020-01-01T00:00:00Z".to_string(),
+            expires_at_ms: 1,
+        };
+        atomic_write_record(&record_path(&scope), &expired_record).expect("expired record");
+        let current =
+            acquire(temp.path(), "task-demo", "worker-b", Some("demo"), 300).expect("reacquire");
+        assert_eq!(current.owner, "worker-b");
+        let error = release(temp.path(), "task-demo", "worker-a")
+            .expect_err("previous owner must not release current lease");
+        assert!(error.to_string().contains("owned by worker-b"));
+        let persisted = load_record_retry(&scope).expect("current record");
+        assert_eq!(persisted.owner, "worker-b");
     }
 
     #[test]

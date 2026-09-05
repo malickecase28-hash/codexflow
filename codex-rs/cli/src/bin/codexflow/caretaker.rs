@@ -353,9 +353,12 @@ fn create_checkpoint(project_root: &Path, label: Option<String>) -> Result<Check
     ensure_git_worktree(project_root)?;
     ensure_clean_worktree(project_root)?;
 
-    let branch = git_output(project_root, &["symbolic-ref", "--quiet", "--short", "HEAD"])?
-        .trim()
-        .to_string();
+    let branch = git_output(
+        project_root,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+    )?
+    .trim()
+    .to_string();
     if branch.is_empty() {
         bail!("checkpoint creation requires a named branch");
     }
@@ -432,16 +435,21 @@ fn load_checkpoint(project_root: &Path, id: &str) -> Result<CheckpointRecord> {
 
 fn restore_checkpoint(project_root: &Path, id: &str, yes: bool) -> Result<RestoreReport> {
     if !yes {
-        bail!("checkpoint restore moves the current branch; rerun with --yes after reviewing the checkpoint");
+        bail!(
+            "checkpoint restore moves the current branch; rerun with --yes after reviewing the checkpoint"
+        );
     }
     ensure_local_codexflow_exclude(project_root)?;
     ensure_git_worktree(project_root)?;
     let checkpoint = load_checkpoint(project_root, id)?;
     ensure_clean_worktree(project_root)?;
 
-    let branch = git_output(project_root, &["symbolic-ref", "--quiet", "--short", "HEAD"])?
-        .trim()
-        .to_string();
+    let branch = git_output(
+        project_root,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+    )?
+    .trim()
+    .to_string();
     if branch != checkpoint.branch {
         bail!(
             "checkpoint belongs to branch {}, but current branch is {}; switch branches before restore",
@@ -471,10 +479,7 @@ fn restore_checkpoint(project_root: &Path, id: &str, yes: bool) -> Result<Restor
         Utc::now().timestamp_millis(),
         previous_head.chars().take(12).collect::<String>()
     );
-    let _ = git_output(
-        project_root,
-        &["update-ref", &safety_ref, &previous_head],
-    )?;
+    let _ = git_output(project_root, &["update-ref", &safety_ref, &previous_head])?;
     let _ = git_output(project_root, &["reset", "--hard", &checkpoint.head])?;
 
     Ok(RestoreReport {
@@ -500,7 +505,9 @@ fn ensure_clean_worktree(project_root: &Path) -> Result<()> {
         &["status", "--porcelain=v1", "--untracked-files=all"],
     )?;
     if !status.trim().is_empty() {
-        bail!("checkpoint operation is blocked by a dirty worktree; commit, stash, or isolate current changes first");
+        bail!(
+            "checkpoint operation is blocked by a dirty worktree; commit, stash, or isolate current changes first"
+        );
     }
     Ok(())
 }
@@ -708,8 +715,8 @@ mod tests {
         init_repo(temp.path());
         fs::write(temp.path().join("state.txt"), "v1\n").expect("v1");
         commit_all(temp.path(), "v1");
-        let checkpoint = create_checkpoint(temp.path(), Some("known good".to_string()))
-            .expect("checkpoint");
+        let checkpoint =
+            create_checkpoint(temp.path(), Some("known good".to_string())).expect("checkpoint");
 
         fs::write(temp.path().join("state.txt"), "v2\n").expect("v2");
         commit_all(temp.path(), "v2");

@@ -6,6 +6,8 @@ mod caretaker;
 mod context_engine;
 #[path = "codexflow/delivery.rs"]
 mod delivery;
+#[path = "codexflow/event.rs"]
+mod event_runtime;
 #[path = "codexflow/orchestrator.rs"]
 mod orchestrator;
 #[path = "codexflow/routing.rs"]
@@ -113,6 +115,7 @@ enum TopCommand {
     Orchestrate(orchestrator::OrchestrateArgs),
     Route(routing::RoutingArgs),
     Delivery(delivery::DeliveryArgs),
+    Event(event_runtime::EventArgs),
     Caretaker(caretaker::CaretakerArgs),
 }
 
@@ -217,6 +220,10 @@ async fn main() -> Result<()> {
                 Some(TopCommand::Delivery(args)) => {
                     let project = resolve_scoped_project(&runtime, args.project.as_deref()).await?;
                     delivery::handle(&primary_root(&project)?, args)
+                }
+                Some(TopCommand::Event(args)) => {
+                    let project = resolve_scoped_project(&runtime, args.project.as_deref()).await?;
+                    event_runtime::handle(&primary_root(&project)?, args)
                 }
                 Some(TopCommand::Caretaker(args)) => {
                     let project = resolve_scoped_project(&runtime, args.project.as_deref()).await?;
@@ -620,20 +627,28 @@ fn print_project(project: &Project, json: bool) -> Result<()> {
     }
     Ok(())
 }
-fn sibling_codex_executable() -> Result<PathBuf> {
+fn sibling_executable(name: &str) -> Result<PathBuf> {
     let current = std::env::current_exe().context("resolve codexflow executable")?;
-    let sibling_name = if cfg!(windows) { "codex.exe" } else { "codex" };
+    let sibling_name = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
     if let Some(parent) = current.parent() {
-        let sibling = parent.join(sibling_name);
+        let sibling = parent.join(&sibling_name);
         if sibling.is_file() {
             return Ok(sibling);
         }
     }
-    let path = which::which("codex").context("find codex executable on PATH")?;
+    let path = which::which(name).with_context(|| format!("find {name} executable on PATH"))?;
     if path == current {
-        bail!("resolved codex executable points back to codexflow");
+        bail!("resolved {name} executable points back to codexflow");
     }
     Ok(path)
+}
+
+fn sibling_codex_executable() -> Result<PathBuf> {
+    sibling_executable("codex")
 }
 
 #[cfg(test)]
@@ -647,6 +662,16 @@ mod tests {
             assert!(!roots_equal("/Code/Demo", "/code/demo"));
         }
     }
+    #[test]
+    fn event_command_is_exposed_on_public_cli() {
+        let cli = Cli::try_parse_from(["codexflow", "event", "--project", "demo", "status"])
+            .expect("event command should parse");
+        let Some(TopCommand::Event(args)) = cli.command else {
+            panic!("expected event command");
+        };
+        assert_eq!(args.project.as_deref(), Some("demo"));
+    }
+
     #[test]
     fn idempotency_key_uses_primary_root() {
         let roots = vec!["/repo".to_string(), "/repo-extra".to_string()];
