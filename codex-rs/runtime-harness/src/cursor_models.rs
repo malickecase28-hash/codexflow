@@ -115,7 +115,9 @@ pub fn parse_cursor_model_list(output: &str) -> Vec<ModelDescriptor> {
         };
         if id.is_empty()
             || id.contains(':')
-            || !id.chars().any(|character| character.is_ascii_alphanumeric())
+            || !id
+                .chars()
+                .any(|character| character.is_ascii_alphanumeric())
         {
             continue;
         }
@@ -130,13 +132,15 @@ pub fn parse_cursor_model_list(output: &str) -> Vec<ModelDescriptor> {
         let Ok(runtime_id) = RuntimeModelId::new(ProviderId::Cursor, id) else {
             continue;
         };
-        models.entry(id.to_string()).or_insert_with(|| ModelDescriptor {
-            id: runtime_id,
-            display_name,
-            capabilities: ProviderCapabilities::for_provider(ProviderId::Cursor),
-            parameters: Vec::new(),
-            metadata: json!({ "source": "cursor-cli", "raw": raw_line.trim() }),
-        });
+        models
+            .entry(id.to_string())
+            .or_insert_with(|| ModelDescriptor {
+                id: runtime_id,
+                display_name,
+                capabilities: ProviderCapabilities::for_provider(ProviderId::Cursor),
+                parameters: Vec::new(),
+                metadata: json!({ "source": "cursor-cli", "raw": raw_line.trim() }),
+            });
     }
     models.into_values().collect()
 }
