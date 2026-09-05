@@ -1,0 +1,44 @@
+name: Runtime harness repair
+
+on:
+  push:
+    branches:
+      - codexflow/phase3c-event-runtime-master-map
+    paths:
+      - "codex-rs/runtime-harness/**"
+      - ".github/workflows/runtime-harness-repair.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: runtime-harness-repair
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codexflow/phase3c-event-runtime-master-map
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - name: Normalize source and dependency lock
+        run: |
+          cargo fmt --manifest-path codex-rs/runtime-harness/Cargo.toml
+          cargo generate-lockfile --manifest-path codex-rs/runtime-harness/Cargo.toml
+      - name: Commit repaired artifacts
+        shell: bash
+        run: |
+          if git diff --quiet -- codex-rs/runtime-harness; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add codex-rs/runtime-harness
+          git commit -m "chore(runtime): normalize formatting and lock dependencies"
+          git push origin HEAD:codexflow/phase3c-event-runtime-master-map

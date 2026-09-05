@@ -1,31 +1,29 @@
 {
-  "name": "Codex",
+  "name": "CodexFlow Rust",
   "build": {
     "dockerfile": "Dockerfile",
-    "context": "..",
-    "platform": "linux/arm64"
+    "context": ".."
   },
-
-  /* Force VS Code to run the container as arm64 in
-     case your host is x86 (or vice-versa). */
-  "runArgs": ["--platform=linux/arm64"],
-
   "features": {
     "ghcr.io/facebook/devcontainers/features/dotslash:latest": {}
   },
-
   "containerEnv": {
     "RUST_BACKTRACE": "1",
-    "CARGO_TARGET_DIR": "${containerWorkspaceFolder}/codex-rs/target-arm64"
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_TARGET_DIR": "/home/ubuntu/.cache/codexflow/cargo-target"
   },
-
+  "postCreateCommand": "bash .devcontainer/bootstrap-rust.sh --prepare",
   "remoteUser": "ubuntu",
   "customizations": {
     "vscode": {
       "settings": {
-        "terminal.integrated.defaultProfile.linux": "bash"
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "rust-analyzer.cargo.targetDir": true
       },
-      "extensions": ["rust-lang.rust-analyzer", "tamasfe.even-better-toml"]
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml"
+      ]
     }
   }
 }

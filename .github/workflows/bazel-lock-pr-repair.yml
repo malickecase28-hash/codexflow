@@ -1,0 +1,46 @@
+name: Bazel lock PR repair
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  regenerate-lock:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'codexflow/phase3c-event-runtime-master-map'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout live PR branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: codexflow/phase3c-event-runtime-master-map
+          fetch-depth: 0
+
+      - name: Prepare Bazel CI
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+          cache-scope: bazel-lock-pr-repair
+
+      - name: Regenerate MODULE.bazel.lock
+        run: just bazel-lock-update
+
+      - name: Verify regenerated lockfile
+        run: just bazel-lock-check
+
+      - name: Commit regenerated lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- MODULE.bazel.lock; then
+            echo "MODULE.bazel.lock is already current"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add MODULE.bazel.lock
+          git commit -m "fix(bazel): regenerate module lockfile"
+          git push origin HEAD:codexflow/phase3c-event-runtime-master-map
