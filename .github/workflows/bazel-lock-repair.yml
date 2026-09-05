@@ -1,6 +1,7 @@
 name: Bazel lock repair
 
 on:
+  pull_request:
   push:
     branches:
       - codexflow/ci-unblock-hard-evidence
