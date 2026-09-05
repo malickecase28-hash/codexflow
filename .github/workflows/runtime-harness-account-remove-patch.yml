@@ -32,17 +32,11 @@ jobs:
 
           accounts = Path("codex-rs/runtime-harness/src/accounts.rs")
           text = accounts.read_text()
-          dead = '''    fn with_importers(
-              providers: HashMap<ProviderId, Arc<dyn Provider>>,
-              importers: HashMap<ProviderId, Arc<dyn ActiveAccountImporter>>,
-          ) -> Self {
-              Self::with_components(providers, importers, None)
-          }
-
-          '''
-          if text.count(dead) != 1:
-              raise SystemExit("expected exactly one generated with_importers helper")
-          accounts.write_text(text.replace(dead, "", 1))
+          old = "        Self::with_components(providers, HashMap::new(), None)"
+          new = "        Self::with_importers(providers, HashMap::new())"
+          if text.count(old) != 1:
+              raise SystemExit(f"expected one AccountBroker::new delegation, found {text.count(old)}")
+          accounts.write_text(text.replace(old, new, 1))
 
           test = Path("codex-rs/runtime-harness/tests/cursor_acp_mock.rs")
           text = test.read_text()
@@ -68,7 +62,7 @@ jobs:
           }
           '''
           if text.count(old) != 1:
-              raise SystemExit("expected exactly one mock agent writer")
+              raise SystemExit(f"expected one mock agent writer, found {text.count(old)}")
           test.write_text(text.replace(old, new, 1))
           PY
       - name: Format
