@@ -79,8 +79,8 @@ jobs:
         with:
           target: x86_64-unknown-linux-gnu
 
-      - name: Format disposable checkout
-        run: cargo fmt
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
 
       - name: Check CodexFlow runtime binaries
         run: cargo check -p codex-cli --bin codexflow --bin codexflow-supervisor
