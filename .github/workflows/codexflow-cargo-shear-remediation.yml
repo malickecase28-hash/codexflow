@@ -38,6 +38,7 @@ jobs:
 
       - name: Reproduce cargo shear normalization
         shell: bash
+        working-directory: codex-rs
         run: cargo shear --deny-warnings
 
       - name: Commit normalized lockfile and retire this workflow
@@ -48,8 +49,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add codex-rs/Cargo.lock .github/workflows/codexflow-cargo-shear-remediation.yml
-          if git diff --cached --quiet --exit-code; then
-            echo "cargo shear made no lockfile change; retiring remediation workflow only"
-          fi
           git commit -m "chore: normalize Cargo lock for cargo-shear"
           git push origin HEAD:codexflow/phase3c-event-runtime-master-map
