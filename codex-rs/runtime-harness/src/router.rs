@@ -1,5 +1,7 @@
 use crate::cursor_acp::CursorAcpBackend;
+use crate::cursor_acp::CursorAcpConfig;
 use crate::cursor_acp::CursorAcpError;
+use crate::lazy_cursor::LazyCursorBackend;
 use crate::types::ProviderId;
 use crate::types::RuntimeEventSink;
 use crate::types::RuntimeInteractionHandler;
@@ -13,10 +15,23 @@ use std::sync::Arc;
 pub type BackendFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, RuntimeRouterError>> + Send + 'a>>;
 
+/// Provider-neutral execution contract for child/external agent runtimes.
+///
+/// Native OpenAI/Codex execution intentionally remains in the existing Codex
+/// thread pipeline; [`RuntimeRoute::NativeOpenAi`] is the explicit bridge back to
+/// that path. External runtimes implement this contract.
 pub trait AgentBackend: Send + Sync {
     fn provider(&self) -> ProviderId;
 
     fn create_session<'a>(&'a self, cwd: &'a Path) -> BackendFuture<'a, RuntimeSessionId>;
+
+    fn create_session_for_model<'a>(
+        &'a self,
+        cwd: &'a Path,
+        _model: &'a RuntimeModelId,
+    ) -> BackendFuture<'a, RuntimeSessionId> {
+        self.create_session(cwd)
+    }
 
     fn load_session<'a>(
         &'a self,
@@ -24,6 +39,16 @@ pub trait AgentBackend: Send + Sync {
         cwd: &'a Path,
         sink: Arc<dyn RuntimeEventSink>,
     ) -> BackendFuture<'a, ()>;
+
+    fn load_session_for_model<'a>(
+        &'a self,
+        session_id: &'a RuntimeSessionId,
+        cwd: &'a Path,
+        _model: &'a RuntimeModelId,
+        sink: Arc<dyn RuntimeEventSink>,
+    ) -> BackendFuture<'a, ()> {
+        self.load_session(session_id, cwd, sink)
+    }
 
     fn prompt<'a>(
         &'a self,
@@ -34,6 +59,8 @@ pub trait AgentBackend: Send + Sync {
     ) -> BackendFuture<'a, Option<String>>;
 
     fn cancel<'a>(&'a self, session_id: &'a RuntimeSessionId) -> BackendFuture<'a, ()>;
+
+    fn shutdown<'a>(&'a self) -> BackendFuture<'a, ()>;
 }
 
 impl AgentBackend for CursorAcpBackend {
@@ -57,6 +84,42 @@ impl AgentBackend for CursorAcpBackend {
         })
     }
 
+    fn create_session_for_model<'a>(
+        &'a self,
+        cwd: &'a Path,
+        model: &'a RuntimeModelId,
+    ) -> BackendFuture<'a, RuntimeSessionId> {
+        Box::pin(async move {
+            if model.provider != ProviderId::Cursor {
+                return Err(RuntimeRouterError::ModelProviderMismatch {
+                    backend: ProviderId::Cursor,
+                    model_provider: model.provider,
+                });
+            }
+            Ok(self.new_session_with_model(cwd, &model.model).await?)
+        })
+    }
+
+    fn load_session_for_model<'a>(
+        &'a self,
+        session_id: &'a RuntimeSessionId,
+        cwd: &'a Path,
+        model: &'a RuntimeModelId,
+        sink: Arc<dyn RuntimeEventSink>,
+    ) -> BackendFuture<'a, ()> {
+        Box::pin(async move {
+            if model.provider != ProviderId::Cursor {
+                return Err(RuntimeRouterError::ModelProviderMismatch {
+                    backend: ProviderId::Cursor,
+                    model_provider: model.provider,
+                });
+            }
+            self.load_session_with_model(session_id, cwd, &model.model, sink)
+                .await?;
+            Ok(())
+        })
+    }
+
     fn prompt<'a>(
         &'a self,
         session_id: &'a RuntimeSessionId,
@@ -73,21 +136,43 @@ impl AgentBackend for CursorAcpBackend {
             Ok(())
         })
     }
+
+    fn shutdown<'a>(&'a self) -> BackendFuture<'a, ()> {
+        Box::pin(async move {
+            self.shutdown().await?;
+            Ok(())
+        })
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeRouterError {
     #[error("Cursor ACP backend error: {0}")]
     Cursor(#[from] CursorAcpError),
+    #[error("Cursor ACP turn was interrupted; runtime restarted without replay: {0}")]
+    CursorTurnInterrupted(CursorAcpError),
+    #[error(
+        "Cursor ACP recovery failed during {operation}: original={original}; recovery={recovery}"
+    )]
+    CursorRecoveryFailed {
+        operation: &'static str,
+        original: String,
+        recovery: String,
+    },
     #[error("runtime provider {0} is unavailable")]
     ProviderUnavailable(ProviderId),
+    #[error("backend {backend} cannot execute a model owned by {model_provider}")]
+    ModelProviderMismatch {
+        backend: ProviderId,
+        model_provider: ProviderId,
+    },
 }
 
-/// Route selected models by their explicit provider identity.
+/// Route selected models by explicit provider identity.
 ///
-/// OpenAI remains a native Codex route: callers continue through the existing
-/// Codex execution pipeline. External providers are returned as AgentBackend
-/// implementations. There is intentionally no silent cross-provider fallback.
+/// The router does not infer a provider from a model name and never performs
+/// cross-provider fallback. Cursor can be installed as a lazy backend so startup
+/// does not launch `agent acp` until a Cursor operation is actually requested.
 pub struct RuntimeRouter {
     cursor: Option<Arc<dyn AgentBackend>>,
 }
@@ -108,6 +193,12 @@ impl RuntimeRouter {
         }
     }
 
+    pub fn with_lazy_cursor(config: CursorAcpConfig) -> Self {
+        Self {
+            cursor: Some(Arc::new(LazyCursorBackend::new(config))),
+        }
+    }
+
     pub fn route(&self, model: &RuntimeModelId) -> Result<RuntimeRoute, RuntimeRouterError> {
         match model.provider {
             ProviderId::OpenAi => Ok(RuntimeRoute::NativeOpenAi),
@@ -117,6 +208,18 @@ impl RuntimeRouter {
                 .cloned()
                 .map(RuntimeRoute::External)
                 .ok_or(RuntimeRouterError::ProviderUnavailable(ProviderId::Cursor)),
+        }
+    }
+
+    /// Terminate any provider-owned child process. Native OpenAI has no child
+    /// owned by this router, so shutdown is a no-op for that provider.
+    pub async fn shutdown_provider(&self, provider: ProviderId) -> Result<(), RuntimeRouterError> {
+        match provider {
+            ProviderId::OpenAi => Ok(()),
+            ProviderId::Cursor => match self.cursor.as_ref() {
+                Some(cursor) => cursor.shutdown().await,
+                None => Ok(()),
+            },
         }
     }
 }
@@ -147,5 +250,19 @@ mod tests {
             error,
             RuntimeRouterError::ProviderUnavailable(ProviderId::Cursor)
         ));
+    }
+
+    #[tokio::test]
+    async fn lazy_cursor_router_does_not_spawn_during_construction_or_shutdown() {
+        let router = RuntimeRouter::with_lazy_cursor(CursorAcpConfig {
+            executable: Some("/definitely/missing/cursor-agent".into()),
+            process_cwd: None,
+        });
+        let model = RuntimeModelId::new(ProviderId::Cursor, "auto").unwrap();
+        assert!(matches!(
+            router.route(&model),
+            Ok(RuntimeRoute::External(_))
+        ));
+        router.shutdown_provider(ProviderId::Cursor).await.unwrap();
     }
 }
