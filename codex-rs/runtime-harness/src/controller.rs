@@ -10,6 +10,7 @@ use crate::ImportedAccount;
 use crate::ModelCatalog;
 use crate::ModelCatalogError;
 use crate::ModelDescriptor;
+use crate::NativeOpenAiAuthReloader;
 use crate::ProviderId;
 use crate::ProviderQuotaSnapshot;
 use crate::QuotaService;
@@ -56,6 +57,16 @@ pub enum RuntimeHarnessError {
     },
     #[error("runtime selection transition coordinator is unavailable")]
     TransitionCoordinatorUnavailable,
+    #[error("OpenAI account switching requires a native Codex auth reload bridge")]
+    OpenAiHotReloadUnavailable,
+    #[error(
+        "account transition for {provider} failed after credential activation: {message}; rollback: {rollback}"
+    )]
+    AccountTransitionFailed {
+        provider: ProviderId,
+        message: String,
+        rollback: String,
+    },
 }
 
 /// Composition root for the multi-runtime harness.
@@ -74,18 +85,45 @@ pub struct RuntimeHarness {
     supervisor: RuntimeSessionSupervisor,
     cursor_config: CursorAcpConfig,
     transition_permit: Arc<Semaphore>,
+    openai_auth_reloader: Option<Arc<dyn NativeOpenAiAuthReloader>>,
 }
 
 impl RuntimeHarness {
     /// Build the production harness without launching Cursor ACP.
     ///
-    /// The embedded broker initializes subswap storage/providers immediately,
-    /// while `RuntimeRouter::with_lazy_cursor` defers `agent acp` until Cursor is
-    /// actually used.
+    /// OpenAI account activation is intentionally unavailable through this
+    /// constructor because the harness has no access to the native Codex
+    /// AuthManager instance. Hosts that support OpenAI hot switching must use
+    /// [`embedded_with_openai_reloader`](Self::embedded_with_openai_reloader).
     pub fn embedded(
         default_model: RuntimeModelId,
         selection_path: PathBuf,
         cursor_config: CursorAcpConfig,
+    ) -> Result<Self, RuntimeHarnessError> {
+        Self::embedded_inner(default_model, selection_path, cursor_config, None)
+    }
+
+    /// Build the production harness with a bridge to the exact native Codex
+    /// authentication manager used by OpenAI turns.
+    pub fn embedded_with_openai_reloader(
+        default_model: RuntimeModelId,
+        selection_path: PathBuf,
+        cursor_config: CursorAcpConfig,
+        openai_auth_reloader: Arc<dyn NativeOpenAiAuthReloader>,
+    ) -> Result<Self, RuntimeHarnessError> {
+        Self::embedded_inner(
+            default_model,
+            selection_path,
+            cursor_config,
+            Some(openai_auth_reloader),
+        )
+    }
+
+    fn embedded_inner(
+        default_model: RuntimeModelId,
+        selection_path: PathBuf,
+        cursor_config: CursorAcpConfig,
+        openai_auth_reloader: Option<Arc<dyn NativeOpenAiAuthReloader>>,
     ) -> Result<Self, RuntimeHarnessError> {
         let broker = Arc::new(AccountBroker::embedded_default()?);
         let selection_store = RuntimeSelectionStore::new(selection_path);
@@ -106,6 +144,7 @@ impl RuntimeHarness {
             supervisor: RuntimeSessionSupervisor::new(),
             cursor_config,
             transition_permit: Arc::new(Semaphore::new(1)),
+            openai_auth_reloader,
         })
     }
 
@@ -208,9 +247,14 @@ impl RuntimeHarness {
         Ok(next)
     }
 
-    /// Activate an account for the active provider. Account selection cannot
-    /// implicitly switch runtimes. Cursor ACP is terminated after a successful
-    /// activation so the next operation authenticates a fresh child.
+    /// Activate an account for the active provider as one serialized transition.
+    ///
+    /// A successful subswap credential write is not enough to complete the
+    /// transition. Cursor must discard its ACP child and OpenAI must reload the
+    /// native Codex AuthManager. Selection persistence must also succeed. If any
+    /// post-activation step fails, the harness attempts to reactivate the prior
+    /// native account and resynchronize the provider runtime before returning an
+    /// error.
     pub async fn activate_account(
         &self,
         provider: ProviderId,
@@ -224,15 +268,87 @@ impl RuntimeHarness {
                 requested: provider,
             });
         }
+        if provider == ProviderId::OpenAi && self.openai_auth_reloader.is_none() {
+            return Err(RuntimeHarnessError::OpenAiHotReloadUnavailable);
+        }
 
+        let previous_active = self
+            .broker
+            .active_account(provider)
+            .await?
+            .map(|account| account.id.0);
         let activation = self.broker.activate(provider, account_id).await?;
+
+        if let Err(error) = self.synchronize_provider_after_activation(provider).await {
+            let rollback = self
+                .rollback_provider_activation(provider, previous_active.as_deref())
+                .await;
+            return Err(RuntimeHarnessError::AccountTransitionFailed {
+                provider,
+                message: error,
+                rollback,
+            });
+        }
+
         let mut next = current;
         next.select_account(provider, activation.account_id.clone())?;
-        self.selection_store.save(&next)?;
+        if let Err(error) = self.selection_store.save(&next) {
+            let rollback = self
+                .rollback_provider_activation(provider, previous_active.as_deref())
+                .await;
+            return Err(RuntimeHarnessError::AccountTransitionFailed {
+                provider,
+                message: format!("persist runtime selection: {error}"),
+                rollback,
+            });
+        }
+
         *self.selection.write().await = next;
         self.supervisor.invalidate();
-        self.router.shutdown_provider(provider).await?;
         Ok(activation)
+    }
+
+    async fn synchronize_provider_after_activation(
+        &self,
+        provider: ProviderId,
+    ) -> Result<(), String> {
+        match provider {
+            ProviderId::OpenAi => {
+                let reloader = self
+                    .openai_auth_reloader
+                    .as_ref()
+                    .ok_or_else(|| "native OpenAI auth reload bridge is unavailable".to_string())?;
+                reloader.reload().await.map_err(|error| error.to_string())
+            }
+            ProviderId::Cursor => self
+                .router
+                .shutdown_provider(ProviderId::Cursor)
+                .await
+                .map_err(|error| error.to_string()),
+        }
+    }
+
+    async fn rollback_provider_activation(
+        &self,
+        provider: ProviderId,
+        previous_account_id: Option<&str>,
+    ) -> String {
+        let Some(previous_account_id) = previous_account_id else {
+            return "unavailable because no previously active account was recorded".to_string();
+        };
+        match self
+            .broker
+            .activate(provider, previous_account_id.to_string())
+            .await
+        {
+            Ok(_) => match self.synchronize_provider_after_activation(provider).await {
+                Ok(()) => "restored previous account and runtime".to_string(),
+                Err(error) => format!(
+                    "previous account restored, but runtime resynchronization failed: {error}"
+                ),
+            },
+            Err(error) => format!("failed to restore previous account: {error}"),
+        }
     }
 
     /// Run Cursor's official browser login and import the resulting native
