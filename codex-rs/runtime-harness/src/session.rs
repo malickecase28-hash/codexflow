@@ -6,6 +6,7 @@ use crate::types::RuntimeSessionId;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
+use std::fmt::Write;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -134,6 +135,55 @@ impl HarnessSession {
         self.transcript.push(event);
     }
 
+    /// Build passive dialogue context for a fresh provider runtime after an
+    /// account, process, or provider boundary.
+    ///
+    /// Only user/assistant dialogue is projected. Tool requests/results,
+    /// permission decisions, and system notices are deliberately excluded so
+    /// provider-specific payloads, credentials, and prior side-effect commands
+    /// cannot be replayed into the replacement runtime. If a turn is currently
+    /// active, its just-recorded user message is also excluded because the caller
+    /// will send that message as the actual prompt after reconstruction.
+    pub fn passive_continuation_context(&self) -> Option<String> {
+        let visible_len = if self.turn_active
+            && matches!(
+                self.transcript.last(),
+                Some(HarnessEvent::UserMessage { .. })
+            ) {
+            self.transcript.len().saturating_sub(1)
+        } else {
+            self.transcript.len()
+        };
+
+        let mut dialogue = String::new();
+        for event in self.transcript.iter().take(visible_len) {
+            match event {
+                HarnessEvent::UserMessage { text } => {
+                    let _ = writeln!(dialogue, "[user]\n{text}\n");
+                }
+                HarnessEvent::AssistantMessage { text } => {
+                    let _ = writeln!(dialogue, "[assistant]\n{text}\n");
+                }
+                HarnessEvent::ToolRequest { .. }
+                | HarnessEvent::ToolResult { .. }
+                | HarnessEvent::PermissionDecision { .. }
+                | HarnessEvent::SystemNotice { .. } => {}
+            }
+        }
+
+        if dialogue.is_empty() {
+            return None;
+        }
+
+        Some(format!(
+            "Continue the existing Codex conversation in a fresh provider runtime. \
+Treat the working directory and repository state as authoritative. Do not repeat \
+prior tool calls or side effects merely because they occurred before this runtime \
+boundary. Tool payloads, permission records, and runtime notices are intentionally \
+omitted.\n\nPrior dialogue:\n{dialogue}"
+        ))
+    }
+
     pub fn switch_model(&mut self, model: RuntimeModelId) -> Result<(), HarnessSessionError> {
         if self.turn_active {
             return Err(HarnessSessionError::TurnActive);
@@ -239,6 +289,64 @@ mod tests {
         assert_eq!(session.account.as_deref(), Some("cursor-account-b"));
         assert!(session.backend_session.is_none());
         assert!(session.backend_generation_matches(2));
+    }
+
+    #[test]
+    fn passive_continuation_excludes_tool_permission_and_runtime_payloads() {
+        let mut session = HarnessSession::new(
+            "session",
+            PathBuf::from("/tmp/project"),
+            model(ProviderId::Cursor, "composer"),
+        );
+        session.record_event(HarnessEvent::UserMessage {
+            text: "update the parser".to_string(),
+        });
+        session.record_event(HarnessEvent::ToolRequest {
+            provider: ProviderId::Cursor,
+            tool_call_id: Some("tool-secret".to_string()),
+            payload: serde_json::json!({"api_key":"credential-must-not-cross"}),
+        });
+        session.record_event(HarnessEvent::PermissionDecision {
+            provider: ProviderId::Cursor,
+            request_id: serde_json::json!("permission-secret"),
+            outcome: PermissionOutcome::AllowOnce,
+        });
+        session.record_event(HarnessEvent::SystemNotice {
+            message: "runtime-private-notice".to_string(),
+        });
+        session.record_event(HarnessEvent::AssistantMessage {
+            text: "the parser was updated".to_string(),
+        });
+
+        let context = session.passive_continuation_context().unwrap();
+        assert!(context.contains("update the parser"));
+        assert!(context.contains("the parser was updated"));
+        assert!(!context.contains("credential-must-not-cross"));
+        assert!(!context.contains("tool-secret"));
+        assert!(!context.contains("permission-secret"));
+        assert!(!context.contains("runtime-private-notice"));
+        assert!(context.contains("repository state as authoritative"));
+    }
+
+    #[test]
+    fn passive_continuation_does_not_duplicate_active_user_prompt() {
+        let mut session = HarnessSession::new(
+            "session",
+            PathBuf::from("/tmp/project"),
+            model(ProviderId::Cursor, "composer"),
+        );
+        session.record_event(HarnessEvent::UserMessage {
+            text: "first question".to_string(),
+        });
+        session.record_event(HarnessEvent::AssistantMessage {
+            text: "first answer".to_string(),
+        });
+        session.begin_turn("current prompt should be sent once");
+
+        let context = session.passive_continuation_context().unwrap();
+        assert!(context.contains("first question"));
+        assert!(context.contains("first answer"));
+        assert!(!context.contains("current prompt should be sent once"));
     }
 
     #[test]
