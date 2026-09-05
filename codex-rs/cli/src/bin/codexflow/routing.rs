@@ -1,5 +1,8 @@
+#[path = "routing/recovery_ledger.rs"]
 mod recovery_ledger;
+#[path = "routing/recovery_replay.rs"]
 mod recovery_replay;
+#[path = "routing/recovery_report.rs"]
 mod recovery_report;
 
 use anyhow::Context;
