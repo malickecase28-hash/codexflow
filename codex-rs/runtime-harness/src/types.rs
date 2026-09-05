@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -132,10 +133,11 @@ where
     }
 }
 
+#[async_trait]
 pub trait RuntimeInteractionHandler: Send + Sync {
-    fn decide_permission(&self, request: &PermissionRequest) -> PermissionOutcome;
+    async fn decide_permission(&self, request: &PermissionRequest) -> PermissionOutcome;
 
-    fn handle_cursor_extension(&self, _method: &str, _params: &Value) -> Option<Value> {
+    async fn handle_cursor_extension(&self, _method: &str, _params: &Value) -> Option<Value> {
         None
     }
 }
@@ -143,8 +145,9 @@ pub trait RuntimeInteractionHandler: Send + Sync {
 #[derive(Default)]
 pub struct RejectingInteractionHandler;
 
+#[async_trait]
 impl RuntimeInteractionHandler for RejectingInteractionHandler {
-    fn decide_permission(&self, _request: &PermissionRequest) -> PermissionOutcome {
+    async fn decide_permission(&self, _request: &PermissionRequest) -> PermissionOutcome {
         PermissionOutcome::RejectOnce
     }
 }
