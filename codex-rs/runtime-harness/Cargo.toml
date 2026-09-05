@@ -24,7 +24,7 @@ async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
 subswap-core = { git = "https://github.com/x0c/subswap", rev = "c839bd4de69397612d09fdc9312e03cf6e9c9e05" }
 subswap-provider-codex = { git = "https://github.com/x0c/subswap", rev = "c839bd4de69397612d09fdc9312e03cf6e9c9e05" }
