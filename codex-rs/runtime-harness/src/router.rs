@@ -256,6 +256,7 @@ mod tests {
     async fn lazy_cursor_router_does_not_spawn_during_construction_or_shutdown() {
         let router = RuntimeRouter::with_lazy_cursor(CursorAcpConfig {
             executable: Some("/definitely/missing/cursor-agent".into()),
+            launcher_args: Vec::new(),
             process_cwd: None,
         });
         let model = RuntimeModelId::new(ProviderId::Cursor, "auto").unwrap();
