@@ -262,12 +262,10 @@ impl CursorAcpBackend {
     ) -> Result<T, CursorAcpError> {
         let fatal = matches!(
             &result,
-            Err(
-                CursorAcpError::Io(_)
-                    | CursorAcpError::Json(_)
-                    | CursorAcpError::UnexpectedEof(_)
-                    | CursorAcpError::ConnectionUnavailable
-            )
+            Err(CursorAcpError::Io(_)
+                | CursorAcpError::Json(_)
+                | CursorAcpError::UnexpectedEof(_)
+                | CursorAcpError::ConnectionUnavailable)
         );
         if !fatal {
             let mut slot = self.connection.lock().await;
