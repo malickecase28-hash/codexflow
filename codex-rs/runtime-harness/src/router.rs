@@ -129,7 +129,10 @@ mod tests {
     fn openai_is_always_native() {
         let router = RuntimeRouter::native_only();
         let model = RuntimeModelId::new(ProviderId::OpenAi, "gpt-5").unwrap();
-        assert!(matches!(router.route(&model).unwrap(), RuntimeRoute::NativeOpenAi));
+        assert!(matches!(
+            router.route(&model).unwrap(),
+            RuntimeRoute::NativeOpenAi
+        ));
     }
 
     #[test]

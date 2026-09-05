@@ -30,10 +30,12 @@ impl RuntimeSelection {
         model: RuntimeModelId,
     ) -> Result<(), RuntimeSelectionError> {
         if model.provider != self.provider() {
-            return Err(RuntimeSelectionError::ProviderTransitionRequiresExplicitSelection {
-                current: self.provider(),
-                requested: model.provider,
-            });
+            return Err(
+                RuntimeSelectionError::ProviderTransitionRequiresExplicitSelection {
+                    current: self.provider(),
+                    requested: model.provider,
+                },
+            );
         }
         self.model = model;
         Ok(())

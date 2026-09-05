@@ -28,7 +28,11 @@ impl NormalizedQuota {
         let provider = match quota.provider.as_str() {
             "codex" | "openai" => ProviderId::OpenAi,
             "cursor" => ProviderId::Cursor,
-            other => return Err(QuotaNormalizationError::UnsupportedProvider(other.to_string())),
+            other => {
+                return Err(QuotaNormalizationError::UnsupportedProvider(
+                    other.to_string(),
+                ));
+            }
         };
         Ok(Self {
             provider,
@@ -43,9 +47,7 @@ impl NormalizedQuota {
     }
 }
 
-pub fn normalize_quotas(
-    quotas: &[Quota],
-) -> Result<Vec<NormalizedQuota>, QuotaNormalizationError> {
+pub fn normalize_quotas(quotas: &[Quota]) -> Result<Vec<NormalizedQuota>, QuotaNormalizationError> {
     quotas.iter().map(NormalizedQuota::from_subswap).collect()
 }
 

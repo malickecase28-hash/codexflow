@@ -33,11 +33,7 @@ impl RuntimeSessionSupervisor {
 
     /// Start ownership of a runtime session. Every transition advances a generation,
     /// allowing delayed events from a dead/replaced provider process to be discarded.
-    pub fn begin(
-        &self,
-        provider: ProviderId,
-        session_id: RuntimeSessionId,
-    ) -> SupervisedSession {
+    pub fn begin(&self, provider: ProviderId, session_id: RuntimeSessionId) -> SupervisedSession {
         let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
         SupervisedSession {
             generation,

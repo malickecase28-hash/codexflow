@@ -100,7 +100,10 @@ impl AccountBroker {
             .ok_or(AccountBrokerError::ProviderUnavailable(provider))
     }
 
-    fn state(&self, provider: ProviderId) -> Result<&Arc<ProviderAccountState>, AccountBrokerError> {
+    fn state(
+        &self,
+        provider: ProviderId,
+    ) -> Result<&Arc<ProviderAccountState>, AccountBrokerError> {
         self.states
             .get(&provider)
             .ok_or(AccountBrokerError::ProviderUnavailable(provider))
