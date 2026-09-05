@@ -146,8 +146,10 @@ impl HarnessSession {
     /// will send that message as the actual prompt after reconstruction.
     pub fn passive_continuation_context(&self) -> Option<String> {
         let visible_len = if self.turn_active
-            && matches!(self.transcript.last(), Some(HarnessEvent::UserMessage { .. }))
-        {
+            && matches!(
+                self.transcript.last(),
+                Some(HarnessEvent::UserMessage { .. })
+            ) {
             self.transcript.len().saturating_sub(1)
         } else {
             self.transcript.len()
