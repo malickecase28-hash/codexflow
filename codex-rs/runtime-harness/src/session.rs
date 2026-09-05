@@ -11,8 +11,12 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HarnessEvent {
-    UserMessage { text: String },
-    AssistantMessage { text: String },
+    UserMessage {
+        text: String,
+    },
+    AssistantMessage {
+        text: String,
+    },
     ToolRequest {
         provider: ProviderId,
         tool_call_id: Option<String>,
@@ -28,7 +32,9 @@ pub enum HarnessEvent {
         request_id: Value,
         outcome: PermissionOutcome,
     },
-    SystemNotice { message: String },
+    SystemNotice {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,11 +74,7 @@ pub struct HarnessSession {
 }
 
 impl HarnessSession {
-    pub fn new(
-        id: impl Into<String>,
-        working_directory: PathBuf,
-        model: RuntimeModelId,
-    ) -> Self {
+    pub fn new(id: impl Into<String>, working_directory: PathBuf, model: RuntimeModelId) -> Self {
         Self {
             id: id.into(),
             transcript: Vec::new(),
@@ -97,7 +99,8 @@ impl HarnessSession {
 
     pub fn finish_turn(&mut self, assistant_message: Option<String>) {
         if let Some(text) = assistant_message {
-            self.transcript.push(HarnessEvent::AssistantMessage { text });
+            self.transcript
+                .push(HarnessEvent::AssistantMessage { text });
         }
         self.turn_active = false;
         self.turn_side_effect_observed = false;
