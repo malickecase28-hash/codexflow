@@ -1,0 +1,48 @@
+name: Runtime harness account removal patch
+
+on:
+  push:
+    branches:
+      - codexflow/phase3c-event-runtime-master-map
+    paths:
+      - .github/workflows/runtime-harness-account-remove-patch.yml
+      - scripts/apply-runtime-harness-account-remove.py
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codexflow/phase3c-event-runtime-master-map
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply exact account removal patch
+        run: python scripts/apply-runtime-harness-account-remove.py
+      - name: Format
+        working-directory: codex-rs/runtime-harness
+        run: cargo fmt --all
+      - name: Test
+        working-directory: codex-rs/runtime-harness
+        run: cargo test --all-targets
+      - name: Clippy
+        working-directory: codex-rs/runtime-harness
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Commit validated patch
+        shell: bash
+        run: |
+          git rm .github/workflows/runtime-harness-account-remove-patch.yml scripts/apply-runtime-harness-account-remove.py
+          git add codex-rs/runtime-harness
+          if git diff --cached --quiet; then
+            echo "No validated source changes to commit"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "feat(runtime): add safe embedded account removal"
+          git push origin HEAD:codexflow/phase3c-event-runtime-master-map
