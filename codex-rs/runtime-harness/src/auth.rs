@@ -20,7 +20,10 @@ pub enum AuthCoordinatorError {
         source: std::io::Error,
     },
     #[error("{provider} login exited unsuccessfully with {status}")]
-    LoginFailed { provider: ProviderId, status: String },
+    LoginFailed {
+        provider: ProviderId,
+        status: String,
+    },
     #[error(transparent)]
     Account(#[from] AccountBrokerError),
 }
