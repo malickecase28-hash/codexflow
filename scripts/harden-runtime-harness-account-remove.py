@@ -36,7 +36,7 @@ replace_once(
 integration = Path("codex-rs/runtime-harness/tests/cursor_acp_mock.rs")
 text = integration.read_text()
 text = text.replace("use std::os::unix::fs::PermissionsExt;\n", "")
-old = '''fn write_mock_agent(directory: &Path) -> std::path::PathBuf {
+old = """fn write_mock_agent(directory: &Path) -> std::path::PathBuf {
     let path = directory.join("mock-agent");
     fs::write(&path, MOCK_AGENT).unwrap();
     let mut permissions = fs::metadata(&path).unwrap().permissions();
@@ -44,8 +44,8 @@ old = '''fn write_mock_agent(directory: &Path) -> std::path::PathBuf {
     fs::set_permissions(&path, permissions).unwrap();
     path
 }
-'''
-new = '''fn mock_config(directory: &Path) -> CursorAcpConfig {
+"""
+new = """fn mock_config(directory: &Path) -> CursorAcpConfig {
     let script = directory.join("mock-agent.py");
     fs::write(&script, MOCK_AGENT).unwrap();
     CursorAcpConfig {
@@ -54,7 +54,7 @@ new = '''fn mock_config(directory: &Path) -> CursorAcpConfig {
         process_cwd: Some(directory.to_path_buf()),
     }
 }
-'''
+"""
 count = text.count(old)
 if count != 1:
     raise SystemExit(f"{integration}: expected one mock writer, found {count}")
@@ -64,10 +64,10 @@ count = text.count(executable_decl)
 if count != 6:
     raise SystemExit(f"{integration}: expected six mock executable declarations, found {count}")
 text = text.replace(executable_decl, "")
-config_literal = '''CursorAcpConfig {
+config_literal = """CursorAcpConfig {
         executable: Some(executable),
         process_cwd: Some(temp.path().to_path_buf()),
-    }'''
+    }"""
 count = text.count(config_literal)
 if count != 6:
     raise SystemExit(f"{integration}: expected six mock config literals, found {count}")
