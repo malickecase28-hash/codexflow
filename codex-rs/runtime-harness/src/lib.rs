@@ -16,6 +16,7 @@ pub mod types;
 
 pub use accounts::AccountBroker;
 pub use accounts::AccountBrokerError;
+pub use accounts::Activation;
 pub use capabilities::ProviderCapabilities;
 pub use cursor_acp::CursorAcpBackend;
 pub use cursor_acp::CursorAcpConfig;
