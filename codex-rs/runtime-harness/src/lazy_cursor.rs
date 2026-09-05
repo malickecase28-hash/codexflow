@@ -1,5 +1,6 @@
 use crate::cursor_acp::CursorAcpBackend;
 use crate::cursor_acp::CursorAcpConfig;
+use crate::cursor_acp::CursorAcpError;
 use crate::router::AgentBackend;
 use crate::router::BackendFuture;
 use crate::router::RuntimeRouterError;
@@ -38,9 +39,6 @@ impl LazyCursorBackend {
             return Ok(backend);
         }
 
-        // Serialize child creation without holding a Tokio lock guard over the
-        // process-spawn/authentication await. A second waiter rechecks after it
-        // obtains the permit so only one ACP child survives initialization.
         let _permit = Arc::clone(&self.connect_permit)
             .acquire_owned()
             .await
@@ -66,8 +64,59 @@ impl LazyCursorBackend {
         self.backend.read().await.is_some()
     }
 
+    fn is_transport_failure(error: &CursorAcpError) -> bool {
+        matches!(
+            error,
+            CursorAcpError::Io(_)
+                | CursorAcpError::Json(_)
+                | CursorAcpError::UnexpectedEof(_)
+                | CursorAcpError::ConnectionUnavailable
+        )
+    }
+
+    /// Replace one failed ACP child exactly once. Concurrent callers that observe
+    /// the same failed Arc converge on the replacement created by the first
+    /// caller instead of starting duplicate Cursor processes.
+    async fn recover_backend(
+        &self,
+        failed: &Arc<CursorAcpBackend>,
+    ) -> Result<Arc<CursorAcpBackend>, RuntimeRouterError> {
+        let _permit = Arc::clone(&self.connect_permit)
+            .acquire_owned()
+            .await
+            .map_err(|_| RuntimeRouterError::ProviderUnavailable(ProviderId::Cursor))?;
+
+        if let Some(current) = self.backend.read().await.as_ref().cloned()
+            && !Arc::ptr_eq(&current, failed)
+        {
+            return Ok(current);
+        }
+
+        {
+            let mut slot = self.backend.write().await;
+            if slot
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, failed))
+            {
+                *slot = None;
+            }
+        }
+
+        // A transport-fatal CursorAcpBackend may already have dropped its
+        // connection. Shutdown is best-effort here; the replacement below is the
+        // authoritative recovery step.
+        let _ = failed.shutdown().await;
+
+        if let Some(current) = self.backend.read().await.as_ref().cloned() {
+            return Ok(current);
+        }
+
+        let replacement = Arc::new(CursorAcpBackend::connect(self.config.clone()).await?);
+        *self.backend.write().await = Some(Arc::clone(&replacement));
+        Ok(replacement)
+    }
+
     async fn shutdown_inner(&self) -> Result<(), RuntimeRouterError> {
-        // Do not race shutdown with a child that is still being initialized.
         let _permit = Arc::clone(&self.connect_permit)
             .acquire_owned()
             .await
@@ -88,7 +137,20 @@ impl AgentBackend for LazyCursorBackend {
     fn create_session<'a>(&'a self, cwd: &'a Path) -> BackendFuture<'a, RuntimeSessionId> {
         Box::pin(async move {
             let backend = self.backend().await?;
-            Ok(backend.new_session(cwd).await?)
+            match backend.new_session(cwd).await {
+                Ok(session) => Ok(session),
+                Err(error) if Self::is_transport_failure(&error) => {
+                    let recovered = self.recover_backend(&backend).await.map_err(|recovery| {
+                        RuntimeRouterError::CursorRecoveryFailed {
+                            operation: "session/new",
+                            original: error.to_string(),
+                            recovery: recovery.to_string(),
+                        }
+                    })?;
+                    Ok(recovered.new_session(cwd).await?)
+                }
+                Err(error) => Err(error.into()),
+            }
         })
     }
 
@@ -100,8 +162,24 @@ impl AgentBackend for LazyCursorBackend {
     ) -> BackendFuture<'a, ()> {
         Box::pin(async move {
             let backend = self.backend().await?;
-            backend.load_session(session_id, cwd, sink).await?;
-            Ok(())
+            match backend
+                .load_session(session_id, cwd, Arc::clone(&sink))
+                .await
+            {
+                Ok(()) => Ok(()),
+                Err(error) if Self::is_transport_failure(&error) => {
+                    let recovered = self.recover_backend(&backend).await.map_err(|recovery| {
+                        RuntimeRouterError::CursorRecoveryFailed {
+                            operation: "session/load",
+                            original: error.to_string(),
+                            recovery: recovery.to_string(),
+                        }
+                    })?;
+                    recovered.load_session(session_id, cwd, sink).await?;
+                    Ok(())
+                }
+                Err(error) => Err(error.into()),
+            }
         })
     }
 
@@ -114,9 +192,23 @@ impl AgentBackend for LazyCursorBackend {
     ) -> BackendFuture<'a, Option<String>> {
         Box::pin(async move {
             let backend = self.backend().await?;
-            Ok(backend
-                .prompt(session_id, prompt, sink, interactions)
-                .await?)
+            match backend.prompt(session_id, prompt, sink, interactions).await {
+                Ok(stop_reason) => Ok(stop_reason),
+                Err(error) if Self::is_transport_failure(&error) => {
+                    self.recover_backend(&backend).await.map_err(|recovery| {
+                        RuntimeRouterError::CursorRecoveryFailed {
+                            operation: "session/prompt",
+                            original: error.to_string(),
+                            recovery: recovery.to_string(),
+                        }
+                    })?;
+                    // A coding turn can already have edited files or executed
+                    // tools before its transport failed. Recover the process but
+                    // never replay the prompt automatically.
+                    Err(RuntimeRouterError::CursorTurnInterrupted(error))
+                }
+                Err(error) => Err(error.into()),
+            }
         })
     }
 

@@ -1,13 +1,16 @@
 #![cfg(unix)]
 
+use codex_runtime_harness::AgentBackend;
 use codex_runtime_harness::CursorAcpBackend;
 use codex_runtime_harness::CursorAcpConfig;
 use codex_runtime_harness::CursorAcpError;
+use codex_runtime_harness::LazyCursorBackend;
 use codex_runtime_harness::PermissionOutcome;
 use codex_runtime_harness::PermissionRequest;
 use codex_runtime_harness::RuntimeEvent;
 use codex_runtime_harness::RuntimeEventSink;
 use codex_runtime_harness::RuntimeInteractionHandler;
+use codex_runtime_harness::RuntimeRouterError;
 use serde_json::Value;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -218,6 +221,32 @@ async fn cursor_acp_transport_crash_requires_and_supports_reconnect() {
 
     backend.reconnect().await.unwrap();
     let recovered = backend.new_session(temp.path()).await.unwrap();
+    assert_eq!(recovered.0, "mock-session");
+    backend.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn lazy_cursor_recovers_crash_without_replaying_failed_prompt() {
+    let temp = tempfile::tempdir().unwrap();
+    let executable = write_mock_agent(temp.path());
+    let backend = LazyCursorBackend::new(CursorAcpConfig {
+        executable: Some(executable),
+        process_cwd: Some(temp.path().to_path_buf()),
+    });
+    let session = backend.create_session(temp.path()).await.unwrap();
+    let collector = Arc::new(Collector::default());
+
+    let error = backend
+        .prompt(&session, "crash", collector, Arc::new(AllowOnce))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        RuntimeRouterError::CursorTurnInterrupted(CursorAcpError::UnexpectedEof(method))
+            if method == "session/prompt"
+    ));
+
+    let recovered = backend.create_session(temp.path()).await.unwrap();
     assert_eq!(recovered.0, "mock-session");
     backend.shutdown().await.unwrap();
 }

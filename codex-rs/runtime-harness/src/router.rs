@@ -95,6 +95,14 @@ impl AgentBackend for CursorAcpBackend {
 pub enum RuntimeRouterError {
     #[error("Cursor ACP backend error: {0}")]
     Cursor(#[from] CursorAcpError),
+    #[error("Cursor ACP turn was interrupted; runtime restarted without replay: {0}")]
+    CursorTurnInterrupted(CursorAcpError),
+    #[error("Cursor ACP recovery failed during {operation}: original={original}; recovery={recovery}")]
+    CursorRecoveryFailed {
+        operation: &'static str,
+        original: String,
+        recovery: String,
+    },
     #[error("runtime provider {0} is unavailable")]
     ProviderUnavailable(ProviderId),
 }
@@ -194,8 +202,6 @@ mod tests {
             router.route(&model),
             Ok(RuntimeRoute::External(_))
         ));
-        // No operation has touched the backend yet, so shutdown must remain a
-        // successful no-op even though the configured executable does not exist.
         router.shutdown_provider(ProviderId::Cursor).await.unwrap();
     }
 }
