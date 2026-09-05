@@ -137,7 +137,9 @@ impl RuntimeHarness {
         self.catalog.read().await.clone()
     }
 
-    async fn acquire_transition(&self) -> Result<tokio::sync::OwnedSemaphorePermit, RuntimeHarnessError> {
+    async fn acquire_transition(
+        &self,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, RuntimeHarnessError> {
         Arc::clone(&self.transition_permit)
             .acquire_owned()
             .await
@@ -156,9 +158,7 @@ impl RuntimeHarness {
     }
 
     /// Refresh Cursor's account-dependent model catalog without starting ACP.
-    pub async fn refresh_cursor_models(
-        &self,
-    ) -> Result<Vec<ModelDescriptor>, RuntimeHarnessError> {
+    pub async fn refresh_cursor_models(&self) -> Result<Vec<ModelDescriptor>, RuntimeHarnessError> {
         let models = discover_cursor_models(&self.cursor_config).await?;
         self.catalog
             .write()

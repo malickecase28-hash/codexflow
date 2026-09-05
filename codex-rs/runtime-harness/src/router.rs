@@ -190,7 +190,10 @@ mod tests {
             process_cwd: None,
         });
         let model = RuntimeModelId::new(ProviderId::Cursor, "auto").unwrap();
-        assert!(matches!(router.route(&model), Ok(RuntimeRoute::External(_))));
+        assert!(matches!(
+            router.route(&model),
+            Ok(RuntimeRoute::External(_))
+        ));
         // No operation has touched the backend yet, so shutdown must remain a
         // successful no-op even though the configured executable does not exist.
         router.shutdown_provider(ProviderId::Cursor).await.unwrap();
