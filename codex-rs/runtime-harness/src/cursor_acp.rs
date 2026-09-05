@@ -360,9 +360,10 @@ impl AcpConnection {
                         request: request.clone(),
                     });
                 }
-                let outcome = interactions
-                    .map(|handler| handler.decide_permission(&request))
-                    .unwrap_or(PermissionOutcome::RejectOnce);
+                let outcome = match interactions {
+                    Some(handler) => handler.decide_permission(&request).await,
+                    None => PermissionOutcome::RejectOnce,
+                };
                 self.write_message(&json!({
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -383,9 +384,11 @@ impl AcpConnection {
                     });
                 }
                 if let Some(request_id) = message.get("id").cloned() {
-                    if let Some(result) = interactions
-                        .and_then(|handler| handler.handle_cursor_extension(method, &params))
-                    {
+                    let result = match interactions {
+                        Some(handler) => handler.handle_cursor_extension(method, &params).await,
+                        None => None,
+                    };
+                    if let Some(result) = result {
                         self.write_message(&json!({
                             "jsonrpc": "2.0",
                             "id": request_id,
