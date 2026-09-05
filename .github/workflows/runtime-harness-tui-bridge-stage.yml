@@ -38,7 +38,7 @@ jobs:
         shell: bash
         run: |
           git rm .github/workflows/runtime-harness-tui-bridge-stage.yml scripts/apply-runtime-tui-bridge-stage.py
-          git add codex-rs/tui codex-rs/Cargo.lock
+          git add codex-rs/Cargo.toml codex-rs/Cargo.lock codex-rs/runtime-harness/Cargo.toml codex-rs/tui
           if git diff --cached --quiet; then
             echo "No validated TUI bridge changes to commit"
             exit 1
