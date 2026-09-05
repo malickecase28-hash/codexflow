@@ -19,6 +19,8 @@ use tokio::process::ChildStdin;
 use tokio::process::ChildStdout;
 use tokio::process::Command;
 use tokio::sync::Mutex;
+use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::Semaphore;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CursorAcpError {
@@ -36,6 +38,8 @@ pub enum CursorAcpError {
     Rpc { method: String, error: Value },
     #[error("Cursor ACP response to {0} omitted the required field '{1}'")]
     MissingField(String, &'static str),
+    #[error("Cursor ACP connection is unavailable; reconnect the backend")]
+    ConnectionUnavailable,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -47,7 +51,9 @@ pub struct CursorAcpConfig {
 }
 
 pub struct CursorAcpBackend {
-    connection: Mutex<AcpConnection>,
+    config: CursorAcpConfig,
+    connection: Mutex<Option<AcpConnection>>,
+    serial: Arc<Semaphore>,
 }
 
 struct AcpConnection {
@@ -59,19 +65,39 @@ struct AcpConnection {
 
 impl CursorAcpBackend {
     pub async fn connect(config: CursorAcpConfig) -> Result<Self, CursorAcpError> {
-        let mut connection = AcpConnection::spawn(config).await?;
+        let mut connection = AcpConnection::spawn(config.clone()).await?;
         connection.initialize().await?;
         connection.authenticate().await?;
         Ok(Self {
-            connection: Mutex::new(connection),
+            config,
+            connection: Mutex::new(Some(connection)),
+            serial: Arc::new(Semaphore::new(1)),
         })
     }
 
+    /// Recreate the ACP child after a transport failure without replacing the
+    /// backend object held by the runtime router.
+    pub async fn reconnect(&self) -> Result<(), CursorAcpError> {
+        let _permit = self.acquire_serial().await?;
+        let mut connection = AcpConnection::spawn(self.config.clone()).await?;
+        connection.initialize().await?;
+        connection.authenticate().await?;
+        let mut slot = self.connection.lock().await;
+        *slot = Some(connection);
+        Ok(())
+    }
+
     pub async fn new_session(&self, cwd: &Path) -> Result<RuntimeSessionId, CursorAcpError> {
-        let mut connection = self.connection.lock().await;
+        let (_permit, mut connection) = self.take_connection().await?;
         let result = connection
-            .request("session/new", json!({ "cwd": cwd, "mcpServers": [] }), None, None)
-            .await?;
+            .request(
+                "session/new",
+                json!({ "cwd": cwd, "mcpServers": [] }),
+                None,
+                None,
+            )
+            .await;
+        let result = self.complete_operation(connection, result).await?;
         session_id_from_result("session/new", result)
     }
 
@@ -81,15 +107,16 @@ impl CursorAcpBackend {
         cwd: &Path,
         sink: Arc<dyn RuntimeEventSink>,
     ) -> Result<(), CursorAcpError> {
-        let mut connection = self.connection.lock().await;
-        connection
+        let (_permit, mut connection) = self.take_connection().await?;
+        let result = connection
             .request(
                 "session/load",
                 json!({ "sessionId": session_id.0, "cwd": cwd, "mcpServers": [] }),
                 Some(sink),
                 None,
             )
-            .await?;
+            .await;
+        self.complete_operation(connection, result).await?;
         Ok(())
     }
 
@@ -100,7 +127,7 @@ impl CursorAcpBackend {
         sink: Arc<dyn RuntimeEventSink>,
         interactions: Arc<dyn RuntimeInteractionHandler>,
     ) -> Result<Option<String>, CursorAcpError> {
-        let mut connection = self.connection.lock().await;
+        let (_permit, mut connection) = self.take_connection().await?;
         let result = connection
             .request(
                 "session/prompt",
@@ -111,7 +138,8 @@ impl CursorAcpBackend {
                 Some(Arc::clone(&sink)),
                 Some(interactions),
             )
-            .await?;
+            .await;
+        let result = self.complete_operation(connection, result).await?;
         let stop_reason = result
             .get("stopReason")
             .and_then(Value::as_str)
@@ -124,19 +152,53 @@ impl CursorAcpBackend {
 
     /// ACP defines cancellation as a client notification, not a request.
     pub async fn cancel(&self, session_id: &RuntimeSessionId) -> Result<(), CursorAcpError> {
-        let mut connection = self.connection.lock().await;
-        connection
+        let (_permit, mut connection) = self.take_connection().await?;
+        let result = connection
             .notify("session/cancel", json!({ "sessionId": session_id.0 }))
-            .await
+            .await;
+        self.complete_operation(connection, result).await
     }
 
     pub async fn shutdown(&self) -> Result<(), CursorAcpError> {
-        let mut connection = self.connection.lock().await;
+        let (_permit, mut connection) = self.take_connection().await?;
         let _ = connection.stdin.shutdown().await;
         if connection.child.try_wait()?.is_none() {
             connection.child.kill().await?;
         }
         Ok(())
+    }
+
+    async fn acquire_serial(&self) -> Result<OwnedSemaphorePermit, CursorAcpError> {
+        Arc::clone(&self.serial)
+            .acquire_owned()
+            .await
+            .map_err(|_| CursorAcpError::ConnectionUnavailable)
+    }
+
+    async fn take_connection(
+        &self,
+    ) -> Result<(OwnedSemaphorePermit, AcpConnection), CursorAcpError> {
+        let permit = self.acquire_serial().await?;
+        let mut slot = self.connection.lock().await;
+        let connection = slot.take().ok_or(CursorAcpError::ConnectionUnavailable)?;
+        drop(slot);
+        Ok((permit, connection))
+    }
+
+    async fn complete_operation<T>(
+        &self,
+        connection: AcpConnection,
+        result: Result<T, CursorAcpError>,
+    ) -> Result<T, CursorAcpError> {
+        let fatal = matches!(
+            &result,
+            Err(CursorAcpError::Io(_) | CursorAcpError::UnexpectedEof(_))
+        );
+        if !fatal {
+            let mut slot = self.connection.lock().await;
+            *slot = Some(connection);
+        }
+        result
     }
 }
 
@@ -162,8 +224,14 @@ impl AcpConnection {
             command.stderr(Stdio::inherit());
             match command.spawn() {
                 Ok(mut child) => {
-                    let stdin = child.stdin.take().ok_or(CursorAcpError::MissingPipe("stdin"))?;
-                    let stdout = child.stdout.take().ok_or(CursorAcpError::MissingPipe("stdout"))?;
+                    let stdin = child
+                        .stdin
+                        .take()
+                        .ok_or(CursorAcpError::MissingPipe("stdin"))?;
+                    let stdout = child
+                        .stdout
+                        .take()
+                        .ok_or(CursorAcpError::MissingPipe("stdout"))?;
                     return Ok(Self {
                         child,
                         stdin,
@@ -179,7 +247,10 @@ impl AcpConnection {
         }
 
         Err(CursorAcpError::Spawn(last_not_found.unwrap_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "no Cursor agent executable found")
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no Cursor agent executable found",
+            )
         })))
     }
 
@@ -356,10 +427,7 @@ impl AcpConnection {
     }
 }
 
-fn session_id_from_result(
-    method: &str,
-    result: Value,
-) -> Result<RuntimeSessionId, CursorAcpError> {
+fn session_id_from_result(method: &str, result: Value) -> Result<RuntimeSessionId, CursorAcpError> {
     result
         .get("sessionId")
         .and_then(Value::as_str)
@@ -403,8 +471,14 @@ pub fn parse_permission_request(request_id: Value, params: Value) -> PermissionR
             let option_id = option.get("optionId")?.as_str()?.to_string();
             Some(PermissionOption {
                 option_id,
-                name: option.get("name").and_then(Value::as_str).map(str::to_string),
-                kind: option.get("kind").and_then(Value::as_str).map(str::to_string),
+                name: option
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                kind: option
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
             })
         })
         .collect();
@@ -433,7 +507,12 @@ mod tests {
                 "content": { "type": "text", "text": "hello" }
             }
         }));
-        assert_eq!(event, RuntimeEvent::AgentMessageChunk { text: "hello".into() });
+        assert_eq!(
+            event,
+            RuntimeEvent::AgentMessageChunk {
+                text: "hello".into()
+            }
+        );
     }
 
     #[test]
