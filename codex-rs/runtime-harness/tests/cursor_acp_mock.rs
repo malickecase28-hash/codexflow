@@ -71,8 +71,9 @@ impl RuntimeEventSink for Collector {
 
 struct AllowOnce;
 
+#[async_trait::async_trait]
 impl RuntimeInteractionHandler for AllowOnce {
-    fn decide_permission(&self, _request: &PermissionRequest) -> PermissionOutcome {
+    async fn decide_permission(&self, _request: &PermissionRequest) -> PermissionOutcome {
         PermissionOutcome::AllowOnce
     }
 }
