@@ -58,7 +58,33 @@ impl RuntimeModelId {
         if model.trim().is_empty() {
             return Err(ModelIdError::EmptyModel);
         }
+        if model.contains('/') {
+            return Err(ModelIdError::ModelContainsSeparator(model));
+        }
         Ok(Self { provider, model })
+    }
+
+    pub fn qualified(&self) -> String {
+        format!("{}/{}", self.provider, self.model)
+    }
+}
+
+impl fmt::Display for RuntimeModelId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.provider, self.model)
+    }
+}
+
+impl FromStr for RuntimeModelId {
+    type Err = ModelIdError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (provider, model) = value
+            .trim()
+            .split_once('/')
+            .ok_or_else(|| ModelIdError::MissingProvider(value.to_string()))?;
+        let provider = provider.parse().map_err(ModelIdError::Provider)?;
+        Self::new(provider, model)
     }
 }
 
@@ -66,6 +92,12 @@ impl RuntimeModelId {
 pub enum ModelIdError {
     #[error("runtime model id cannot be empty")]
     EmptyModel,
+    #[error("runtime model name cannot contain '/': {0}")]
+    ModelContainsSeparator(String),
+    #[error("runtime model id must be fully qualified as provider/model: {0}")]
+    MissingProvider(String),
+    #[error(transparent)]
+    Provider(ProviderParseError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -169,5 +201,22 @@ mod tests {
         let model = RuntimeModelId::new(ProviderId::Cursor, "gpt-5").unwrap();
         assert_eq!(model.provider, ProviderId::Cursor);
         assert_eq!(model.model, "gpt-5");
+    }
+
+    #[test]
+    fn fully_qualified_model_id_round_trips() {
+        let model: RuntimeModelId = "cursor/gpt-5".parse().unwrap();
+        assert_eq!(model.provider, ProviderId::Cursor);
+        assert_eq!(model.model, "gpt-5");
+        assert_eq!(model.to_string(), "cursor/gpt-5");
+        assert_eq!(model.qualified(), "cursor/gpt-5");
+    }
+
+    #[test]
+    fn unqualified_model_id_is_rejected() {
+        assert!(matches!(
+            "gpt-5".parse::<RuntimeModelId>(),
+            Err(ModelIdError::MissingProvider(_))
+        ));
     }
 }
