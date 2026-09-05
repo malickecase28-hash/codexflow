@@ -16,6 +16,9 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+#[path = "lease.rs"]
+mod lease;
+
 const SCHEMA: &str = "codexflow.runtime.v2";
 const LIVE_STATUSES: &[&str] = &["pending", "running", "idle", "blocked"];
 
@@ -269,6 +272,11 @@ pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
         } => with_locked_ledger(project_root, |ledger| {
             validate_id(&id)?;
             validate_risk(&risk)?;
+            if assignee.is_some() {
+                bail!(
+                    "task-create --assignee is disabled; assign ownership with runtime agent-set"
+                );
+            }
             if ledger.tasks.contains_key(&id) {
                 bail!("task already exists: {id}");
             }
@@ -282,7 +290,7 @@ pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
                     title,
                     status: "todo".to_string(),
                     risk,
-                    assignee,
+                    assignee: None,
                     depends_on,
                     budget_tokens: None,
                     used_tokens: 0,
@@ -310,6 +318,9 @@ pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
             assignee,
             budget_tokens,
         } => with_locked_ledger(project_root, |ledger| {
+            if assignee.is_some() {
+                bail!("task-set --assignee is disabled; assign ownership with runtime agent-set");
+            }
             let task = ledger
                 .tasks
                 .get_mut(&id)
@@ -322,15 +333,17 @@ pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
                 if status == "done" {
                     bail!("use task-complete so completion criteria and gates are checked");
                 }
+                if matches!(status.as_str(), "failed" | "cancelled") && task.assignee.is_some() {
+                    bail!(
+                        "close or fail the assigned agent with runtime agent-set before marking task {id} {status}"
+                    );
+                }
                 task.status = status;
                 task.waiting_on = None;
             }
             if let Some(risk) = risk {
                 validate_risk(&risk)?;
                 task.risk = risk;
-            }
-            if assignee.is_some() {
-                task.assignee = assignee;
             }
             if budget_tokens.is_some() {
                 task.budget_tokens = budget_tokens;
@@ -349,7 +362,8 @@ pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
                 .tasks
                 .get_mut(&id)
                 .with_context(|| format!("unknown task: {id}"))?;
-            let criterion_id = criterion.unwrap_or_else(|| format!("ac-{}", task.acceptance.len() + 1));
+            let criterion_id =
+                criterion.unwrap_or_else(|| format!("ac-{}", task.acceptance.len() + 1));
             validate_id(&criterion_id)?;
             if task.acceptance.iter().any(|item| item.id == criterion_id) {
                 bail!("acceptance criterion already exists: {criterion_id}");
@@ -388,7 +402,9 @@ pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
                 .acceptance
                 .iter_mut()
                 .find(|item| item.id == criterion)
-                .with_context(|| format!("unknown acceptance criterion {criterion} for task {id}"))?;
+                .with_context(|| {
+                    format!("unknown acceptance criterion {criterion} for task {id}")
+                })?;
             if !item.evidence.iter().any(|existing| existing == &evidence) {
                 item.evidence.push(evidence.clone());
             }
@@ -405,35 +421,55 @@ pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(item)?);
             Ok(())
         }),
-        RuntimeCommand::TaskComplete { id, actor } => with_locked_ledger(project_root, |ledger| {
+        RuntimeCommand::TaskComplete { id, actor } => {
             validate_id(&actor)?;
-            let blockers = completion_blockers(ledger, &id)?;
-            let check = CompletionCheck {
-                task: id.clone(),
-                ready: blockers.is_empty(),
-                blockers,
-            };
-            if !check.ready {
-                println!("{}", serde_json::to_string_pretty(&check)?);
-                bail!("task {id} is not ready for completion");
+            let owner = with_locked_ledger(project_root, |ledger| {
+                let blockers = completion_blockers(ledger, &id)?;
+                let check = CompletionCheck {
+                    task: id.clone(),
+                    ready: blockers.is_empty(),
+                    blockers,
+                };
+                if !check.ready {
+                    println!("{}", serde_json::to_string_pretty(&check)?);
+                    bail!("task {id} is not ready for completion");
+                }
+                let owner = {
+                    let task = ledger
+                        .tasks
+                        .get_mut(&id)
+                        .with_context(|| format!("unknown task: {id}"))?;
+                    let owner = task.assignee.take();
+                    task.status = "done".to_string();
+                    task.waiting_on = None;
+                    task.updated_at = now_iso();
+                    println!("{}", serde_json::to_string_pretty(task)?);
+                    owner
+                };
+                if let Some(owner_name) = owner.as_deref()
+                    && let Some(agent) = ledger.agents.get_mut(owner_name)
+                    && agent.task.as_deref() == Some(id.as_str())
+                {
+                    agent.status = "completed".to_string();
+                    agent.task = None;
+                    agent.updated_at = now_iso();
+                }
+                append_event(
+                    project_root,
+                    "task.completed",
+                    &actor,
+                    Some(&id),
+                    "completion gate passed",
+                )?;
+                Ok(owner)
+            })?;
+            if let Some(owner) = owner {
+                lease::release_task_if_owned(project_root, &id, &owner).with_context(|| {
+                    format!("task {id} completed but its ownership lease could not be released")
+                })?;
             }
-            let task = ledger
-                .tasks
-                .get_mut(&id)
-                .with_context(|| format!("unknown task: {id}"))?;
-            task.status = "done".to_string();
-            task.waiting_on = None;
-            task.updated_at = now_iso();
-            append_event(
-                project_root,
-                "task.completed",
-                &actor,
-                Some(&id),
-                "completion gate passed",
-            )?;
-            println!("{}", serde_json::to_string_pretty(task)?);
             Ok(())
-        }),
+        }
         RuntimeCommand::TaskWait { id, await_id } => with_locked_ledger(project_root, |ledger| {
             validate_id(&await_id)?;
             let task = ledger
@@ -491,8 +527,65 @@ pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
         } => with_locked_ledger(project_root, |ledger| {
             validate_id(&name)?;
             validate_agent_status(&status)?;
-            let now = now_iso();
+            if let Some(task_id) = task.as_deref()
+                && !ledger.tasks.contains_key(task_id)
+            {
+                bail!("unknown task: {task_id}");
+            }
+
             let current = ledger.agents.get(&name).cloned();
+            let previous_task = current.as_ref().and_then(|record| record.task.clone());
+            let holds_lease = agent_status_holds_task_lease(&status) && task.is_some();
+            let new_task_owned = task.clone();
+            let new_task = new_task_owned.as_deref();
+
+            if holds_lease && let Some(task_id) = new_task {
+                lease::acquire_task(
+                    project_root,
+                    task_id,
+                    &name,
+                    lease::DEFAULT_TASK_LEASE_TTL_SECONDS,
+                )?;
+            }
+
+            if let Some(previous_task_id) = previous_task.as_deref()
+                && (Some(previous_task_id) != new_task || !holds_lease)
+                && let Err(error) =
+                    lease::release_task_if_owned(project_root, previous_task_id, &name)
+            {
+                if holds_lease
+                    && let Some(task_id) = new_task
+                    && task_id != previous_task_id
+                {
+                    let _ = lease::release_task_if_owned(project_root, task_id, &name);
+                }
+                return Err(error).with_context(|| {
+                    format!("release previous task ownership {previous_task_id} for {name}")
+                });
+            }
+
+            if let Some(previous_task_id) = previous_task.as_deref()
+                && (Some(previous_task_id) != new_task || !holds_lease)
+                && let Some(record) = ledger.tasks.get_mut(previous_task_id)
+                && record.assignee.as_deref() == Some(name.as_str())
+            {
+                record.assignee = None;
+                record.updated_at = now_iso();
+            }
+
+            if holds_lease && let Some(task_id) = new_task {
+                let record = ledger.tasks.get_mut(task_id).expect("task validated above");
+                record.assignee = Some(name.clone());
+                record.updated_at = now_iso();
+            } else if let Some(task_id) = new_task
+                && let Some(record) = ledger.tasks.get_mut(task_id)
+                && record.assignee.as_deref() == Some(name.as_str())
+            {
+                record.assignee = None;
+                record.updated_at = now_iso();
+            }
+
+            let now = now_iso();
             ledger.agents.insert(
                 name.clone(),
                 AgentRecord {
@@ -514,18 +607,36 @@ pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
                 project_root,
                 "agent.updated",
                 &name,
-                None,
-                "agent state updated",
+                new_task,
+                if holds_lease {
+                    "agent state updated with task ownership lease"
+                } else {
+                    "agent state updated without task ownership"
+                },
             )?;
             println!("{name}");
             Ok(())
         }),
         RuntimeCommand::AgentHeartbeat { name, progress } => {
             with_locked_ledger(project_root, |ledger| {
-                let agent = ledger
-                    .agents
-                    .get_mut(&name)
-                    .with_context(|| format!("unknown agent: {name}"))?;
+                let (task_id, status) = {
+                    let agent = ledger
+                        .agents
+                        .get(&name)
+                        .with_context(|| format!("unknown agent: {name}"))?;
+                    (agent.task.clone(), agent.status.clone())
+                };
+                if agent_status_holds_task_lease(&status)
+                    && let Some(task_id) = task_id.as_deref()
+                {
+                    lease::renew_task(
+                        project_root,
+                        task_id,
+                        &name,
+                        lease::DEFAULT_TASK_LEASE_TTL_SECONDS,
+                    )?;
+                }
+                let agent = ledger.agents.get_mut(&name).expect("agent validated above");
                 if progress.is_some() && progress == agent.last_progress {
                     agent.no_progress_count = agent.no_progress_count.saturating_add(1);
                 } else if progress.is_some() {
@@ -565,12 +676,26 @@ pub fn handle(project_root: &Path, args: RuntimeArgs) -> Result<()> {
             Ok(())
         }),
         RuntimeCommand::AgentTokens { name, add } => with_locked_ledger(project_root, |ledger| {
-            let agent = ledger
-                .agents
-                .get_mut(&name)
-                .with_context(|| format!("unknown agent: {name}"))?;
+            let (task_id, status) = {
+                let agent = ledger
+                    .agents
+                    .get(&name)
+                    .with_context(|| format!("unknown agent: {name}"))?;
+                (agent.task.clone(), agent.status.clone())
+            };
+            if agent_status_holds_task_lease(&status)
+                && let Some(task_id) = task_id.as_deref()
+            {
+                lease::renew_task(
+                    project_root,
+                    task_id,
+                    &name,
+                    lease::DEFAULT_TASK_LEASE_TTL_SECONDS,
+                )?;
+            }
+            let agent = ledger.agents.get_mut(&name).expect("agent validated above");
             agent.used_tokens = agent.used_tokens.saturating_add(add);
-            if let Some(task_id) = agent.task.clone()
+            if let Some(task_id) = task_id
                 && let Some(task) = ledger.tasks.get_mut(&task_id)
             {
                 task.used_tokens = task.used_tokens.saturating_add(add);
@@ -1074,6 +1199,10 @@ fn validate_evidence(value: &str) -> Result<()> {
     Ok(())
 }
 
+fn agent_status_holds_task_lease(value: &str) -> bool {
+    matches!(value, "pending" | "running" | "idle")
+}
+
 fn validate_agent_status(value: &str) -> Result<()> {
     if ![
         "pending",
@@ -1137,7 +1266,9 @@ mod tests {
 
         let task = ledger.tasks.get_mut("task-a").expect("task");
         task.acceptance[0].status = "pass".to_string();
-        task.acceptance[0].evidence.push("cargo test: pass".to_string());
+        task.acceptance[0]
+            .evidence
+            .push("cargo test: pass".to_string());
         assert!(
             completion_blockers(&ledger, "task-a")
                 .expect("check ready")
@@ -1150,7 +1281,9 @@ mod tests {
         let mut ledger = default_ledger(Path::new("/demo"));
         let mut task = task_with_acceptance("integration passes");
         task.acceptance[0].status = "pass".to_string();
-        task.acceptance[0].evidence.push("integration suite".to_string());
+        task.acceptance[0]
+            .evidence
+            .push("integration suite".to_string());
         task.depends_on.push("dep".to_string());
         task.gates.insert(
             "security".to_string(),

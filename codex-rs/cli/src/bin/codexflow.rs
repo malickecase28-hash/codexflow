@@ -8,6 +8,8 @@ mod context_engine;
 mod delivery;
 #[path = "codexflow/orchestrator.rs"]
 mod orchestrator;
+#[path = "codexflow/resume.rs"]
+mod resume;
 #[path = "codexflow/routing.rs"]
 mod routing;
 #[path = "codexflow/runtime.rs"]
@@ -112,6 +114,7 @@ enum TopCommand {
     Build(build_manager::BuildArgs),
     Orchestrate(orchestrator::OrchestrateArgs),
     Route(routing::RoutingArgs),
+    Resume(resume::ResumeArgs),
     Delivery(delivery::DeliveryArgs),
     Caretaker(caretaker::CaretakerArgs),
 }
@@ -213,6 +216,10 @@ async fn main() -> Result<()> {
                 Some(TopCommand::Route(args)) => {
                     let project = resolve_scoped_project(&runtime, args.project.as_deref()).await?;
                     routing::handle(&primary_root(&project)?, args)
+                }
+                Some(TopCommand::Resume(args)) => {
+                    let project = resolve_scoped_project(&runtime, args.project.as_deref()).await?;
+                    resume::handle(&primary_root(&project)?, args)
                 }
                 Some(TopCommand::Delivery(args)) => {
                     let project = resolve_scoped_project(&runtime, args.project.as_deref()).await?;
