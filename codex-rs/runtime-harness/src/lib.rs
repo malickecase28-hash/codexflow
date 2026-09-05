@@ -8,6 +8,7 @@
 pub mod accounts;
 pub mod capabilities;
 pub mod cursor_acp;
+pub mod cursor_models;
 pub mod model_catalog;
 pub mod quota;
 pub mod quota_service;
@@ -26,6 +27,9 @@ pub use cursor_acp::CursorAcpConfig;
 pub use cursor_acp::CursorAcpError;
 pub use cursor_acp::normalize_session_update;
 pub use cursor_acp::parse_permission_request;
+pub use cursor_models::CursorModelDiscoveryError;
+pub use cursor_models::discover_cursor_models;
+pub use cursor_models::parse_cursor_model_list;
 pub use model_catalog::ModelCatalog;
 pub use model_catalog::ModelCatalogError;
 pub use model_catalog::ModelDescriptor;
