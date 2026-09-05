@@ -28,6 +28,8 @@ pub enum AccountBrokerError {
     ProviderUnavailable(ProviderId),
     #[error("provider {0} account swap coordinator is unavailable")]
     SwapCoordinatorUnavailable(ProviderId),
+    #[error("provider {0} does not support importing the active native login")]
+    ActiveImportUnavailable(ProviderId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +37,46 @@ pub struct Activation {
     pub provider: ProviderId,
     pub account_id: String,
     pub generation: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportedAccount {
+    pub account: Account,
+    pub generation: u64,
+}
+
+#[async_trait::async_trait]
+trait ActiveAccountImporter: Send + Sync {
+    async fn import_active(&self, label_hint: Option<String>) -> subswap_core::Result<Account>;
+}
+
+struct CodexActiveAccountImporter {
+    provider: Arc<subswap_provider_codex::CodexProvider>,
+}
+
+#[async_trait::async_trait]
+impl ActiveAccountImporter for CodexActiveAccountImporter {
+    async fn import_active(&self, label_hint: Option<String>) -> subswap_core::Result<Account> {
+        let provider = Arc::clone(&self.provider);
+        tokio::task::spawn_blocking(move || provider.import_active(label_hint))
+            .await
+            .map_err(|error| {
+                subswap_core::Error::Provider(format!(
+                    "Codex active-account import task failed: {error}"
+                ))
+            })?
+    }
+}
+
+struct CursorActiveAccountImporter {
+    provider: Arc<subswap_provider_cursor::CursorProvider>,
+}
+
+#[async_trait::async_trait]
+impl ActiveAccountImporter for CursorActiveAccountImporter {
+    async fn import_active(&self, label_hint: Option<String>) -> subswap_core::Result<Account> {
+        self.provider.import_active(label_hint).await
+    }
 }
 
 struct ProviderAccountState {
@@ -53,17 +95,29 @@ impl ProviderAccountState {
 
 pub struct AccountBroker {
     providers: HashMap<ProviderId, Arc<dyn Provider>>,
+    importers: HashMap<ProviderId, Arc<dyn ActiveAccountImporter>>,
     states: HashMap<ProviderId, Arc<ProviderAccountState>>,
 }
 
 impl AccountBroker {
     pub fn new(providers: HashMap<ProviderId, Arc<dyn Provider>>) -> Self {
+        Self::with_importers(providers, HashMap::new())
+    }
+
+    fn with_importers(
+        providers: HashMap<ProviderId, Arc<dyn Provider>>,
+        importers: HashMap<ProviderId, Arc<dyn ActiveAccountImporter>>,
+    ) -> Self {
         let states = providers
             .keys()
             .copied()
             .map(|provider| (provider, Arc::new(ProviderAccountState::new())))
             .collect();
-        Self { providers, states }
+        Self {
+            providers,
+            importers,
+            states,
+        }
     }
 
     /// Build the account controller directly from pinned subswap crates.
@@ -79,19 +133,29 @@ impl AccountBroker {
         ));
         let registry = Arc::new(AccountRegistry::new(paths.registry_file()));
 
-        let codex: Arc<dyn Provider> = Arc::new(subswap_provider_codex::new(
+        let codex = Arc::new(subswap_provider_codex::new(
             Arc::clone(&store),
             Arc::clone(&registry),
         ));
-        let cursor: Arc<dyn Provider> = Arc::new(subswap_provider_cursor::CursorProvider::new(
+        let cursor = Arc::new(subswap_provider_cursor::CursorProvider::new(
             Arc::clone(&store),
             Arc::clone(&registry),
         )?);
 
-        let mut providers = HashMap::new();
-        providers.insert(ProviderId::OpenAi, codex);
-        providers.insert(ProviderId::Cursor, cursor);
-        Ok(Self::new(providers))
+        let mut providers: HashMap<ProviderId, Arc<dyn Provider>> = HashMap::new();
+        providers.insert(ProviderId::OpenAi, codex.clone());
+        providers.insert(ProviderId::Cursor, cursor.clone());
+
+        let mut importers: HashMap<ProviderId, Arc<dyn ActiveAccountImporter>> = HashMap::new();
+        importers.insert(
+            ProviderId::OpenAi,
+            Arc::new(CodexActiveAccountImporter { provider: codex }),
+        );
+        importers.insert(
+            ProviderId::Cursor,
+            Arc::new(CursorActiveAccountImporter { provider: cursor }),
+        );
+        Ok(Self::with_importers(providers, importers))
     }
 
     fn provider(&self, provider: ProviderId) -> Result<&Arc<dyn Provider>, AccountBrokerError> {
@@ -140,6 +204,33 @@ impl AccountBroker {
         Ok(Activation {
             provider,
             account_id,
+            generation,
+        })
+    }
+
+    /// Import the credentials currently active in the provider's native client.
+    ///
+    /// Import is serialized with account activation. A successful import bumps
+    /// the same provider generation used to invalidate stale backend sessions.
+    pub async fn import_active(
+        &self,
+        provider: ProviderId,
+        label_hint: Option<String>,
+    ) -> Result<ImportedAccount, AccountBrokerError> {
+        let state = Arc::clone(self.state(provider)?);
+        let importer = Arc::clone(
+            self.importers
+                .get(&provider)
+                .ok_or(AccountBrokerError::ActiveImportUnavailable(provider))?,
+        );
+        let _permit = Arc::clone(&state.swap_permit)
+            .acquire_owned()
+            .await
+            .map_err(|_| AccountBrokerError::SwapCoordinatorUnavailable(provider))?;
+        let account = importer.import_active(label_hint).await?;
+        let generation = state.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        Ok(ImportedAccount {
+            account,
             generation,
         })
     }
