@@ -97,7 +97,9 @@ pub enum RuntimeRouterError {
     Cursor(#[from] CursorAcpError),
     #[error("Cursor ACP turn was interrupted; runtime restarted without replay: {0}")]
     CursorTurnInterrupted(CursorAcpError),
-    #[error("Cursor ACP recovery failed during {operation}: original={original}; recovery={recovery}")]
+    #[error(
+        "Cursor ACP recovery failed during {operation}: original={original}; recovery={recovery}"
+    )]
     CursorRecoveryFailed {
         operation: &'static str,
         original: String,
