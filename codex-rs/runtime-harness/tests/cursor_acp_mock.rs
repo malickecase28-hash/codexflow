@@ -43,9 +43,14 @@ for raw in sys.stdin:
         else:
             send({"jsonrpc":"2.0","id":request_id,"result":{}})
     elif method == "session/new":
-        send({"jsonrpc":"2.0","id":request_id,"result":{"sessionId":"mock-session"}})
+        send({"jsonrpc":"2.0","id":request_id,"result":{"sessionId":"mock-session","configOptions":[{"id":"model","name":"Model","category":"model","type":"select","currentValue":"auto","options":[{"value":"auto","name":"Auto"},{"value":"composer","name":"Composer"}]}]}})
     elif method == "session/load":
-        send({"jsonrpc":"2.0","id":request_id,"result":{}})
+        send({"jsonrpc":"2.0","id":request_id,"result":{"configOptions":[{"id":"model","name":"Model","category":"model","type":"select","currentValue":"auto","options":[{"value":"auto","name":"Auto"},{"value":"composer","name":"Composer"}]}]}})
+    elif method == "session/set_config_option":
+        if params.get("configId") != "model" or params.get("value") != "composer":
+            send({"jsonrpc":"2.0","id":request_id,"error":{"code":-32002,"message":"wrong model config"}})
+        else:
+            send({"jsonrpc":"2.0","id":request_id,"result":{}})
     elif method == "session/prompt":
         prompt = params.get("prompt") or []
         text = prompt[0].get("text", "") if prompt else ""
@@ -148,6 +153,52 @@ async fn cursor_acp_round_trips_stream_tool_and_permission_events() {
     }
 
     backend.cancel(&session).await.unwrap();
+    backend.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn cursor_acp_applies_selected_model_through_session_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let executable = write_mock_agent(temp.path());
+    let backend = CursorAcpBackend::connect(CursorAcpConfig {
+        executable: Some(executable),
+        process_cwd: Some(temp.path().to_path_buf()),
+    })
+    .await
+    .unwrap();
+
+    let session = backend
+        .new_session_with_model(temp.path(), "composer")
+        .await
+        .unwrap();
+    assert_eq!(session.0, "mock-session");
+
+    let collector = Arc::new(Collector::default());
+    backend
+        .load_session_with_model(&session, temp.path(), "composer", collector)
+        .await
+        .unwrap();
+    backend.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn cursor_acp_rejects_unavailable_selected_model() {
+    let temp = tempfile::tempdir().unwrap();
+    let executable = write_mock_agent(temp.path());
+    let backend = CursorAcpBackend::connect(CursorAcpConfig {
+        executable: Some(executable),
+        process_cwd: Some(temp.path().to_path_buf()),
+    })
+    .await
+    .unwrap();
+
+    let error = backend
+        .new_session_with_model(temp.path(), "not-a-real-model")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, CursorAcpError::ModelUnavailable(model) if model == "not-a-real-model")
+    );
     backend.shutdown().await.unwrap();
 }
 

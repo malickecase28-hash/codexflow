@@ -25,12 +25,30 @@ pub trait AgentBackend: Send + Sync {
 
     fn create_session<'a>(&'a self, cwd: &'a Path) -> BackendFuture<'a, RuntimeSessionId>;
 
+    fn create_session_for_model<'a>(
+        &'a self,
+        cwd: &'a Path,
+        _model: &'a RuntimeModelId,
+    ) -> BackendFuture<'a, RuntimeSessionId> {
+        self.create_session(cwd)
+    }
+
     fn load_session<'a>(
         &'a self,
         session_id: &'a RuntimeSessionId,
         cwd: &'a Path,
         sink: Arc<dyn RuntimeEventSink>,
     ) -> BackendFuture<'a, ()>;
+
+    fn load_session_for_model<'a>(
+        &'a self,
+        session_id: &'a RuntimeSessionId,
+        cwd: &'a Path,
+        _model: &'a RuntimeModelId,
+        sink: Arc<dyn RuntimeEventSink>,
+    ) -> BackendFuture<'a, ()> {
+        self.load_session(session_id, cwd, sink)
+    }
 
     fn prompt<'a>(
         &'a self,
@@ -62,6 +80,42 @@ impl AgentBackend for CursorAcpBackend {
     ) -> BackendFuture<'a, ()> {
         Box::pin(async move {
             self.load_session(session_id, cwd, sink).await?;
+            Ok(())
+        })
+    }
+
+    fn create_session_for_model<'a>(
+        &'a self,
+        cwd: &'a Path,
+        model: &'a RuntimeModelId,
+    ) -> BackendFuture<'a, RuntimeSessionId> {
+        Box::pin(async move {
+            if model.provider != ProviderId::Cursor {
+                return Err(RuntimeRouterError::ModelProviderMismatch {
+                    backend: ProviderId::Cursor,
+                    model_provider: model.provider,
+                });
+            }
+            Ok(self.new_session_with_model(cwd, &model.model).await?)
+        })
+    }
+
+    fn load_session_for_model<'a>(
+        &'a self,
+        session_id: &'a RuntimeSessionId,
+        cwd: &'a Path,
+        model: &'a RuntimeModelId,
+        sink: Arc<dyn RuntimeEventSink>,
+    ) -> BackendFuture<'a, ()> {
+        Box::pin(async move {
+            if model.provider != ProviderId::Cursor {
+                return Err(RuntimeRouterError::ModelProviderMismatch {
+                    backend: ProviderId::Cursor,
+                    model_provider: model.provider,
+                });
+            }
+            self.load_session_with_model(session_id, cwd, &model.model, sink)
+                .await?;
             Ok(())
         })
     }
@@ -107,6 +161,11 @@ pub enum RuntimeRouterError {
     },
     #[error("runtime provider {0} is unavailable")]
     ProviderUnavailable(ProviderId),
+    #[error("backend {backend} cannot execute a model owned by {model_provider}")]
+    ModelProviderMismatch {
+        backend: ProviderId,
+        model_provider: ProviderId,
+    },
 }
 
 /// Route selected models by explicit provider identity.

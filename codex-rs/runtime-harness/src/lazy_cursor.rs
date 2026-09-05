@@ -7,6 +7,7 @@ use crate::router::RuntimeRouterError;
 use crate::types::ProviderId;
 use crate::types::RuntimeEventSink;
 use crate::types::RuntimeInteractionHandler;
+use crate::types::RuntimeModelId;
 use crate::types::RuntimeSessionId;
 use std::path::Path;
 use std::sync::Arc;
@@ -154,6 +155,36 @@ impl AgentBackend for LazyCursorBackend {
         })
     }
 
+    fn create_session_for_model<'a>(
+        &'a self,
+        cwd: &'a Path,
+        model: &'a RuntimeModelId,
+    ) -> BackendFuture<'a, RuntimeSessionId> {
+        Box::pin(async move {
+            if model.provider != ProviderId::Cursor {
+                return Err(RuntimeRouterError::ModelProviderMismatch {
+                    backend: ProviderId::Cursor,
+                    model_provider: model.provider,
+                });
+            }
+            let backend = self.backend().await?;
+            match backend.new_session_with_model(cwd, &model.model).await {
+                Ok(session) => Ok(session),
+                Err(error) if Self::is_transport_failure(&error) => {
+                    let recovered = self.recover_backend(&backend).await.map_err(|recovery| {
+                        RuntimeRouterError::CursorRecoveryFailed {
+                            operation: "session/new",
+                            original: error.to_string(),
+                            recovery: recovery.to_string(),
+                        }
+                    })?;
+                    Ok(recovered.new_session_with_model(cwd, &model.model).await?)
+                }
+                Err(error) => Err(error.into()),
+            }
+        })
+    }
+
     fn load_session<'a>(
         &'a self,
         session_id: &'a RuntimeSessionId,
@@ -176,6 +207,44 @@ impl AgentBackend for LazyCursorBackend {
                         }
                     })?;
                     recovered.load_session(session_id, cwd, sink).await?;
+                    Ok(())
+                }
+                Err(error) => Err(error.into()),
+            }
+        })
+    }
+
+    fn load_session_for_model<'a>(
+        &'a self,
+        session_id: &'a RuntimeSessionId,
+        cwd: &'a Path,
+        model: &'a RuntimeModelId,
+        sink: Arc<dyn RuntimeEventSink>,
+    ) -> BackendFuture<'a, ()> {
+        Box::pin(async move {
+            if model.provider != ProviderId::Cursor {
+                return Err(RuntimeRouterError::ModelProviderMismatch {
+                    backend: ProviderId::Cursor,
+                    model_provider: model.provider,
+                });
+            }
+            let backend = self.backend().await?;
+            match backend
+                .load_session_with_model(session_id, cwd, &model.model, Arc::clone(&sink))
+                .await
+            {
+                Ok(()) => Ok(()),
+                Err(error) if Self::is_transport_failure(&error) => {
+                    let recovered = self.recover_backend(&backend).await.map_err(|recovery| {
+                        RuntimeRouterError::CursorRecoveryFailed {
+                            operation: "session/load",
+                            original: error.to_string(),
+                            recovery: recovery.to_string(),
+                        }
+                    })?;
+                    recovered
+                        .load_session_with_model(session_id, cwd, &model.model, sink)
+                        .await?;
                     Ok(())
                 }
                 Err(error) => Err(error.into()),
