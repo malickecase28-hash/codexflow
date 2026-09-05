@@ -1,0 +1,137 @@
+name: codexflow-validation-ownership
+
+on:
+  push:
+    branches:
+      - codexflow/validation-ownership-resume
+    paths:
+      - "codex-rs/cli/src/bin/codexflow/resume.rs"
+      - "tools/codexflow/apply_ownership_resume.py"
+      - "tools/codexflow/fixup_ownership_resume.py"
+      - "tools/codexflow/ownership_resume_eval.py"
+      - ".github/workflows/codexflow-validation-ownership.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codexflow-validation-ownership-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Materialize and validate ownership/resume
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_CACHE_SIZE: 5G
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e
+        with:
+          toolchain: "1.98.1"
+          components: rustfmt
+
+      - name: Restore Cargo dependency cache
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: codexflow-validation-cargo-${{ runner.os }}-rust-1.98.1-${{ hashFiles('codex-rs/Cargo.lock') }}
+          restore-keys: |
+            codexflow-validation-cargo-${{ runner.os }}-rust-1.98.1-
+
+      - name: Install sccache
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: sccache
+
+      - name: Configure sccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${ACTIONS_CACHE_URL:-}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          else
+            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
+            echo "SCCACHE_DIR=${RUNNER_TEMP}/codexflow-sccache" >> "$GITHUB_ENV"
+          fi
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - name: Materialize ownership and resume implementation
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/codexflow/apply_ownership_resume.py
+          python3 tools/codexflow/fixup_ownership_resume.py
+
+      - name: Format materialized Rust
+        run: cargo fmt
+
+      - name: Reject whitespace and conflict damage
+        working-directory: .
+        run: git diff --check
+
+      - name: Check CodexFlow binaries
+        run: cargo check -p codex-cli --bin codexflow --bin codexflow-supervisor
+
+      - name: Run full CodexFlow CLI tests
+        run: cargo test -p codex-cli --bin codexflow
+
+      - name: Build acceptance binary
+        run: cargo build -p codex-cli --bin codexflow
+
+      - name: Run recovery and replay eval
+        run: python3 ../tools/codexflow/recovery_eval.py --bin "$CARGO_TARGET_DIR/debug/codexflow"
+
+      - name: Run ownership and resume eval
+        run: python3 ../tools/codexflow/ownership_resume_eval.py --bin "$CARGO_TARGET_DIR/debug/codexflow"
+
+      - name: Run supervisor durability tests
+        run: cargo test -p codex-cli --bin codexflow-supervisor
+
+      - name: Run wait-agent event and schema tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-core 'multi_agents_v2::wait::tests::'
+          cargo test -p codex-core 'wait_agent_tool_v2_'
+
+      - name: Materialize validated files on validation branch
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            codex-rs/cli/src/bin/codexflow.rs \
+            codex-rs/cli/src/bin/codexflow/runtime.rs \
+            codex-rs/cli/src/bin/codexflow/lease.rs
+          if git diff --cached --quiet; then
+            echo "No materialized diff to commit"
+          else
+            git commit -m "validation: materialize ownership resume runtime"
+            git push origin HEAD:codexflow/validation-ownership-resume
+          fi
+
+      - name: Show sccache statistics
+        if: always()
+        run: sccache --show-stats || true
