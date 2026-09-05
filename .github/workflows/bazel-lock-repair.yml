@@ -1,0 +1,49 @@
+name: Bazel lock repair
+
+on:
+  push:
+    branches:
+      - codexflow/ci-unblock-hard-evidence
+    paths:
+      - MODULE.bazel
+      - MODULE.bazel.lock
+      - .github/workflows/bazel-lock-repair.yml
+
+permissions:
+  contents: write
+
+jobs:
+  regenerate-lock:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repair branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: codexflow/ci-unblock-hard-evidence
+          fetch-depth: 0
+
+      - name: Prepare Bazel CI
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+          cache-scope: bazel-lock-repair
+
+      - name: Regenerate MODULE.bazel.lock
+        run: just bazel-lock-update
+
+      - name: Verify lockfile is current
+        run: just bazel-lock-check
+
+      - name: Commit regenerated lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- MODULE.bazel.lock; then
+            echo "MODULE.bazel.lock is already current"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add MODULE.bazel.lock
+          git commit -m "fix(bazel): regenerate module lockfile"
+          git push origin HEAD:codexflow/ci-unblock-hard-evidence
