@@ -112,28 +112,29 @@ async fn cursor_acp_round_trips_stream_tool_and_permission_events() {
         .unwrap();
     assert_eq!(stop_reason.as_deref(), Some("end_turn"));
 
-    let events = collector.0.lock().unwrap();
-    assert!(events.iter().any(|event| matches!(
-        event,
-        RuntimeEvent::AgentMessageChunk { text } if text == "hello from cursor"
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        RuntimeEvent::PermissionRequest { request }
-            if request.session_id.as_deref() == Some("mock-session")
-                && request.options.iter().any(|option| option.option_id == "allow-once")
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        RuntimeEvent::ToolCall { raw }
-            if raw.get("toolCallId").and_then(Value::as_str) == Some("tool-1")
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        RuntimeEvent::Completed { stop_reason }
-            if stop_reason.as_deref() == Some("end_turn")
-    )));
-    drop(events);
+    {
+        let events = collector.0.lock().unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::AgentMessageChunk { text } if text == "hello from cursor"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::PermissionRequest { request }
+                if request.session_id.as_deref() == Some("mock-session")
+                    && request.options.iter().any(|option| option.option_id == "allow-once")
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::ToolCall { raw }
+                if raw.get("toolCallId").and_then(Value::as_str) == Some("tool-1")
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::Completed { stop_reason }
+                if stop_reason.as_deref() == Some("end_turn")
+        )));
+    }
 
     backend.cancel(&session).await.unwrap();
     backend.shutdown().await.unwrap();
