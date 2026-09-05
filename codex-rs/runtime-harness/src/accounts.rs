@@ -1,6 +1,8 @@
 use crate::types::ProviderId;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use subswap_core::Account;
 use subswap_core::AccountId;
 use subswap_core::AccountRegistry;
@@ -16,6 +18,7 @@ use subswap_core::Quota;
 use subswap_core::QuotaFetchState;
 use subswap_core::auto_decide;
 use subswap_core::paths::AppPaths;
+use tokio::sync::Semaphore;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AccountBrokerError {
@@ -23,15 +26,44 @@ pub enum AccountBrokerError {
     Subswap(#[from] subswap_core::Error),
     #[error("provider {0} is not registered with the account broker")]
     ProviderUnavailable(ProviderId),
+    #[error("provider {0} account swap coordinator is unavailable")]
+    SwapCoordinatorUnavailable(ProviderId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Activation {
+    pub provider: ProviderId,
+    pub account_id: String,
+    pub generation: u64,
+}
+
+struct ProviderAccountState {
+    swap_permit: Arc<Semaphore>,
+    generation: AtomicU64,
+}
+
+impl ProviderAccountState {
+    fn new() -> Self {
+        Self {
+            swap_permit: Arc::new(Semaphore::new(1)),
+            generation: AtomicU64::new(0),
+        }
+    }
 }
 
 pub struct AccountBroker {
     providers: HashMap<ProviderId, Arc<dyn Provider>>,
+    states: HashMap<ProviderId, Arc<ProviderAccountState>>,
 }
 
 impl AccountBroker {
     pub fn new(providers: HashMap<ProviderId, Arc<dyn Provider>>) -> Self {
-        Self { providers }
+        let states = providers
+            .keys()
+            .copied()
+            .map(|provider| (provider, Arc::new(ProviderAccountState::new())))
+            .collect();
+        Self { providers, states }
     }
 
     /// Build the account controller directly from pinned subswap crates.
@@ -68,6 +100,16 @@ impl AccountBroker {
             .ok_or(AccountBrokerError::ProviderUnavailable(provider))
     }
 
+    fn state(&self, provider: ProviderId) -> Result<&Arc<ProviderAccountState>, AccountBrokerError> {
+        self.states
+            .get(&provider)
+            .ok_or(AccountBrokerError::ProviderUnavailable(provider))
+    }
+
+    pub fn generation(&self, provider: ProviderId) -> Result<u64, AccountBrokerError> {
+        Ok(self.state(provider)?.generation.load(Ordering::Acquire))
+    }
+
     pub async fn list_accounts(
         &self,
         provider: ProviderId,
@@ -75,14 +117,28 @@ impl AccountBroker {
         Ok(self.provider(provider)?.list_accounts().await?)
     }
 
+    /// Activate an account under a provider-specific serialization permit and
+    /// increment the provider's account generation only after a successful,
+    /// transactional subswap activation.
     pub async fn activate(
         &self,
         provider: ProviderId,
         account_id: impl Into<String>,
-    ) -> Result<(), AccountBrokerError> {
-        let id = AccountId(account_id.into());
+    ) -> Result<Activation, AccountBrokerError> {
+        let account_id = account_id.into();
+        let id = AccountId(account_id.clone());
+        let state = Arc::clone(self.state(provider)?);
+        let _permit = Arc::clone(&state.swap_permit)
+            .acquire_owned()
+            .await
+            .map_err(|_| AccountBrokerError::SwapCoordinatorUnavailable(provider))?;
         self.provider(provider)?.activate(&id).await?;
-        Ok(())
+        let generation = state.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        Ok(Activation {
+            provider,
+            account_id,
+            generation,
+        })
     }
 
     pub async fn query_quota(
@@ -143,7 +199,7 @@ impl AccountBroker {
     ) -> Result<PolicyDecision, AccountBrokerError> {
         let decision = self.evaluate_auto_swap(provider, config).await?;
         if let PolicyDecision::Swap { to, .. } = &decision {
-            self.provider(provider)?.activate(to).await?;
+            self.activate(provider, to.0.clone()).await?;
         }
         Ok(decision)
     }
@@ -229,8 +285,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn account_activation_is_scoped_to_requested_provider() {
+    fn broker() -> AccountBroker {
         let cursor = Arc::new(FakeProvider::new(
             "cursor",
             vec![
@@ -243,14 +298,23 @@ mod tests {
             vec![account("codex", "codex-primary", true)],
         ));
         let mut providers: HashMap<ProviderId, Arc<dyn Provider>> = HashMap::new();
-        providers.insert(ProviderId::Cursor, cursor.clone());
-        providers.insert(ProviderId::OpenAi, openai.clone());
-        let broker = AccountBroker::new(providers);
+        providers.insert(ProviderId::Cursor, cursor);
+        providers.insert(ProviderId::OpenAi, openai);
+        AccountBroker::new(providers)
+    }
 
-        broker
+    #[tokio::test]
+    async fn account_activation_is_scoped_to_requested_provider() {
+        let broker = broker();
+        let activation = broker
             .activate(ProviderId::Cursor, "secondary")
             .await
             .unwrap();
+        assert_eq!(activation.provider, ProviderId::Cursor);
+        assert_eq!(activation.account_id, "secondary");
+        assert_eq!(activation.generation, 1);
+        assert_eq!(broker.generation(ProviderId::Cursor).unwrap(), 1);
+        assert_eq!(broker.generation(ProviderId::OpenAi).unwrap(), 0);
         assert_eq!(
             broker
                 .active_account(ProviderId::Cursor)
@@ -274,22 +338,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn successful_activations_increment_only_that_provider_generation() {
+        let broker = broker();
+        let first = broker
+            .activate(ProviderId::Cursor, "secondary")
+            .await
+            .unwrap();
+        let second = broker
+            .activate(ProviderId::Cursor, "primary")
+            .await
+            .unwrap();
+        assert_eq!(first.generation, 1);
+        assert_eq!(second.generation, 2);
+        assert_eq!(broker.generation(ProviderId::Cursor).unwrap(), 2);
+        assert_eq!(broker.generation(ProviderId::OpenAi).unwrap(), 0);
+    }
+
+    #[tokio::test]
     async fn autoswap_never_crosses_provider_boundary() {
-        let cursor = Arc::new(FakeProvider::new(
-            "cursor",
-            vec![
-                account("cursor", "primary", true),
-                account("cursor", "secondary", false),
-            ],
-        ));
-        let openai = Arc::new(FakeProvider::new(
-            "codex",
-            vec![account("codex", "codex-primary", true)],
-        ));
-        let mut providers: HashMap<ProviderId, Arc<dyn Provider>> = HashMap::new();
-        providers.insert(ProviderId::Cursor, cursor);
-        providers.insert(ProviderId::OpenAi, openai);
-        let broker = AccountBroker::new(providers);
+        let broker = broker();
         let config = PolicyConfig {
             enabled: true,
             threshold: 0.9,
@@ -305,6 +372,8 @@ mod tests {
             decision,
             PolicyDecision::Swap { ref to, .. } if to.0 == "secondary"
         ));
+        assert_eq!(broker.generation(ProviderId::Cursor).unwrap(), 1);
+        assert_eq!(broker.generation(ProviderId::OpenAi).unwrap(), 0);
         assert_eq!(
             broker
                 .active_account(ProviderId::Cursor)
