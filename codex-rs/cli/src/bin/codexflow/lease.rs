@@ -8,17 +8,24 @@ use clap::Subcommand;
 use serde::Deserialize;
 use serde::Serialize;
 use std::fs;
+use std::fs::File;
+use std::fs::OpenOptions;
+use std::fs::TryLockError;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 
 const LEASE_SCHEMA: &str = "codexflow.lease.v1";
 const MIN_TTL_SECONDS: u64 = 30;
 const MAX_TTL_SECONDS: u64 = 86_400;
 const METADATA_RETRY_COUNT: usize = 4;
 const METADATA_RETRY_DELAY: Duration = Duration::from_millis(8);
+const LEASE_LOCK_TIMEOUT: Duration = Duration::from_secs(8);
+const LEASE_LOCK_RETRY_DELAY: Duration = Duration::from_millis(25);
+pub(crate) const DEFAULT_TASK_LEASE_TTL_SECONDS: u64 = 900;
 
 #[derive(Debug, Args)]
 pub struct LeaseArgs {
@@ -35,7 +42,7 @@ enum LeaseCommand {
         owner: String,
         #[arg(long)]
         task: Option<String>,
-        #[arg(long, default_value_t = 900)]
+        #[arg(long, default_value_t = DEFAULT_TASK_LEASE_TTL_SECONDS)]
         ttl_seconds: u64,
     },
     Renew {
@@ -43,7 +50,7 @@ enum LeaseCommand {
         scope: String,
         #[arg(long)]
         owner: String,
-        #[arg(long, default_value_t = 900)]
+        #[arg(long, default_value_t = DEFAULT_TASK_LEASE_TTL_SECONDS)]
         ttl_seconds: u64,
     },
     Release {
@@ -116,6 +123,54 @@ pub fn task_scope(task_id: &str) -> Result<String> {
     Ok(format!("task-{task_id}"))
 }
 
+pub(crate) fn acquire_task(
+    project_root: &Path,
+    task_id: &str,
+    owner: &str,
+    ttl_seconds: u64,
+) -> Result<()> {
+    let scope = task_scope(task_id)?;
+    acquire(project_root, &scope, owner, Some(task_id), ttl_seconds)?;
+    Ok(())
+}
+
+pub(crate) fn renew_task(
+    project_root: &Path,
+    task_id: &str,
+    owner: &str,
+    ttl_seconds: u64,
+) -> Result<()> {
+    let scope = task_scope(task_id)?;
+    renew(project_root, &scope, owner, ttl_seconds)?;
+    Ok(())
+}
+
+pub(crate) fn release_task_if_owned(
+    project_root: &Path,
+    task_id: &str,
+    owner: &str,
+) -> Result<bool> {
+    let scope = task_scope(task_id)?;
+    validate_token(owner, "lease owner")?;
+    let base = lease_base_dir(project_root)?;
+    fs::create_dir_all(&base).with_context(|| format!("create {}", base.display()))?;
+    let _guard = ScopeLock::acquire(&base, &scope)?;
+    let directory = scope_dir(&base, &scope);
+    if !directory.is_dir() {
+        return Ok(false);
+    }
+    let lease = load_record_retry(&directory)?;
+    if expired(&lease) {
+        remove_scope_dir(&directory, "expired lease")?;
+        return Ok(false);
+    }
+    if lease.owner != owner {
+        bail!("lease {scope} is owned by {}, not {owner}", lease.owner);
+    }
+    remove_scope_dir(&directory, "lease")?;
+    Ok(true)
+}
+
 fn acquire(
     project_root: &Path,
     scope: &str,
@@ -131,6 +186,7 @@ fn acquire(
     let ttl_seconds = validate_ttl(ttl_seconds)?;
     let base = lease_base_dir(project_root)?;
     fs::create_dir_all(&base).with_context(|| format!("create {}", base.display()))?;
+    let _guard = ScopeLock::acquire(&base, scope)?;
     let scope_dir = scope_dir(&base, scope);
 
     for _ in 0..4 {
@@ -161,7 +217,7 @@ fn acquire(
                     )
                 })?;
                 if existing.owner == owner && !expired(&existing) {
-                    return renew(project_root, scope, owner, ttl_seconds);
+                    return renew_locked(&scope_dir, scope, owner, ttl_seconds);
                 }
                 if expired(&existing) {
                     match fs::remove_dir_all(&scope_dir) {
@@ -192,18 +248,24 @@ fn acquire(
     bail!("lease {scope} changed repeatedly while acquiring; retry the operation")
 }
 
-fn renew(
-    project_root: &Path,
-    scope: &str,
-    owner: &str,
-    ttl_seconds: u64,
-) -> Result<LeaseRecord> {
+fn renew(project_root: &Path, scope: &str, owner: &str, ttl_seconds: u64) -> Result<LeaseRecord> {
     validate_token(scope, "lease scope")?;
     validate_token(owner, "lease owner")?;
     let ttl_seconds = validate_ttl(ttl_seconds)?;
     let base = lease_base_dir(project_root)?;
-    let scope_dir = scope_dir(&base, scope);
-    let mut lease = load_record_retry(&scope_dir)?;
+    fs::create_dir_all(&base).with_context(|| format!("create {}", base.display()))?;
+    let _guard = ScopeLock::acquire(&base, scope)?;
+    let directory = scope_dir(&base, scope);
+    renew_locked(&directory, scope, owner, ttl_seconds)
+}
+
+fn renew_locked(
+    directory: &Path,
+    scope: &str,
+    owner: &str,
+    ttl_seconds: u64,
+) -> Result<LeaseRecord> {
+    let mut lease = load_record_retry(directory)?;
     if lease.owner != owner {
         bail!("lease {scope} is owned by {}, not {owner}", lease.owner);
     }
@@ -215,7 +277,7 @@ fn renew(
     lease.expires_at_ms = now
         .timestamp_millis()
         .saturating_add(ttl_millis(ttl_seconds));
-    atomic_write_record(&record_path(&scope_dir), &lease)?;
+    atomic_write_record(&record_path(directory), &lease)?;
     Ok(lease)
 }
 
@@ -223,12 +285,14 @@ fn release(project_root: &Path, scope: &str, owner: &str) -> Result<()> {
     validate_token(scope, "lease scope")?;
     validate_token(owner, "lease owner")?;
     let base = lease_base_dir(project_root)?;
-    let scope_dir = scope_dir(&base, scope);
-    let lease = load_record_retry(&scope_dir)?;
+    fs::create_dir_all(&base).with_context(|| format!("create {}", base.display()))?;
+    let _guard = ScopeLock::acquire(&base, scope)?;
+    let directory = scope_dir(&base, scope);
+    let lease = load_record_retry(&directory)?;
     if lease.owner != owner {
         bail!("lease {scope} is owned by {}, not {owner}", lease.owner);
     }
-    fs::remove_dir_all(&scope_dir).with_context(|| format!("remove {}", scope_dir.display()))
+    remove_scope_dir(&directory, "lease")
 }
 
 fn list(project_root: &Path) -> Result<Vec<LeaseView>> {
@@ -242,7 +306,7 @@ fn list(project_root: &Path) -> Result<Vec<LeaseView>> {
             Ok(entry) => entry,
             Err(_) => continue,
         };
-        if !entry.path().is_dir() {
+        if !entry.path().is_dir() || entry.file_name() == ".locks" {
             continue;
         }
         let lease = match load_record_retry(&entry.path()) {
@@ -263,29 +327,36 @@ fn prune(project_root: &Path) -> Result<Vec<String>> {
     if !base.is_dir() {
         return Ok(Vec::new());
     }
-    let mut removed = Vec::new();
+    let mut scopes = Vec::new();
     for entry in fs::read_dir(&base).with_context(|| format!("read {}", base.display()))? {
         let entry = match entry {
             Ok(entry) => entry,
             Err(_) => continue,
         };
-        let scope_dir = entry.path();
-        if !scope_dir.is_dir() {
+        if !entry.path().is_dir() || entry.file_name() == ".locks" {
             continue;
         }
-        let lease = match load_record_retry(&scope_dir) {
+        if let Some(scope) = entry.file_name().to_str() {
+            scopes.push(scope.to_string());
+        }
+    }
+    let mut removed = Vec::new();
+    for scope in scopes {
+        if validate_token(&scope, "lease scope").is_err() {
+            continue;
+        }
+        let _guard = ScopeLock::acquire(&base, &scope)?;
+        let directory = scope_dir(&base, &scope);
+        if !directory.is_dir() {
+            continue;
+        }
+        let lease = match load_record_retry(&directory) {
             Ok(lease) => lease,
             Err(_) => continue,
         };
         if expired(&lease) {
-            match fs::remove_dir_all(&scope_dir) {
-                Ok(()) => removed.push(lease.scope),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(error)
-                        .with_context(|| format!("remove {}", scope_dir.display()));
-                }
-            }
+            remove_scope_dir(&directory, "expired lease")?;
+            removed.push(lease.scope);
         }
     }
     removed.sort();
@@ -366,9 +437,7 @@ fn validate_token(value: &str, label: &str) -> Result<()> {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-'
         })
     {
-        bail!(
-            "invalid {label} {value:?}; use lowercase letters, digits, _ or -, max 64 chars"
-        );
+        bail!("invalid {label} {value:?}; use lowercase letters, digits, _ or -, max 64 chars");
     }
     Ok(())
 }
@@ -382,6 +451,49 @@ fn atomic_write_record(path: &Path, record: &LeaseRecord) -> Result<()> {
         fs::remove_file(path).with_context(|| format!("remove {}", path.display()))?;
     }
     fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))
+}
+
+fn remove_scope_dir(directory: &Path, label: &str) -> Result<()> {
+    match fs::remove_dir_all(directory) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("remove {label} {}", directory.display())),
+    }
+}
+
+struct ScopeLock {
+    _file: File,
+}
+
+impl ScopeLock {
+    fn acquire(base: &Path, scope: &str) -> Result<Self> {
+        validate_token(scope, "lease scope")?;
+        let lock_dir = base.join(".locks");
+        fs::create_dir_all(&lock_dir).with_context(|| format!("create {}", lock_dir.display()))?;
+        let path = lock_dir.join(format!("{scope}.lock"));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&path)
+            .with_context(|| format!("open lease lock {}", path.display()))?;
+        let started = Instant::now();
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Self { _file: file }),
+                Err(TryLockError::WouldBlock) => {
+                    if started.elapsed() >= LEASE_LOCK_TIMEOUT {
+                        bail!("timed out waiting for lease lock {}", path.display());
+                    }
+                    thread::sleep(LEASE_LOCK_RETRY_DELAY);
+                }
+                Err(TryLockError::Error(error)) => {
+                    return Err(error)
+                        .with_context(|| format!("lock lease scope {}", path.display()));
+                }
+            }
+        }
+    }
 }
 
 fn git_output(project_root: &Path, args: &[&str]) -> Result<String> {
@@ -408,15 +520,15 @@ mod tests {
     fn scope_directory_is_exclusive_until_release() {
         let temp = tempfile::tempdir().expect("tempdir");
         init_repo(temp.path());
-        let first = acquire(temp.path(), "task-demo", "worker-a", Some("demo"), 300)
-            .expect("first lease");
+        let first =
+            acquire(temp.path(), "task-demo", "worker-a", Some("demo"), 300).expect("first lease");
         assert_eq!(first.owner, "worker-a");
         let error = acquire(temp.path(), "task-demo", "worker-b", Some("demo"), 300)
             .expect_err("second owner must be blocked");
         assert!(error.to_string().contains("held by worker-a"));
         release(temp.path(), "task-demo", "worker-a").expect("release");
-        let second = acquire(temp.path(), "task-demo", "worker-b", Some("demo"), 300)
-            .expect("second lease");
+        let second =
+            acquire(temp.path(), "task-demo", "worker-b", Some("demo"), 300).expect("second lease");
         assert_eq!(second.owner, "worker-b");
     }
 
@@ -437,8 +549,8 @@ mod tests {
             expires_at_ms: 1,
         };
         atomic_write_record(&record_path(&scope), &expired_record).expect("expired record");
-        let lease = acquire(temp.path(), "task-demo", "worker-b", Some("demo"), 300)
-            .expect("reclaim");
+        let lease =
+            acquire(temp.path(), "task-demo", "worker-b", Some("demo"), 300).expect("reclaim");
         assert_eq!(lease.owner, "worker-b");
     }
 

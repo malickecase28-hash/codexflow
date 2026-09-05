@@ -7,6 +7,9 @@ use serde_json::Value;
 use std::fs;
 use std::path::Path;
 
+#[path = "handoff_context.rs"]
+mod handoff_context;
+
 const RUNTIME_SCHEMA: &str = "codexflow.runtime.v2";
 const RESUME_SCHEMA: &str = "codexflow.resume-packet.v1";
 
@@ -31,6 +34,7 @@ struct ResumePacket {
     budget_tokens: Option<u64>,
     latest_handoff: Option<Value>,
     relevant_refs: Vec<String>,
+    handoff: handoff_context::HandoffContext,
     dependencies: Vec<DependencyStatus>,
     pending_acceptance: Vec<AcceptanceStatus>,
     blocking_gates: Vec<BlockingGate>,
@@ -159,6 +163,7 @@ fn build_packet(ledger: &Value, task_id: &str) -> Result<ResumePacket> {
         .and_then(|handoff| handoff.get("refs"))
         .map(|value| string_array(Some(value)))
         .unwrap_or_default();
+    let handoff = handoff_context::HandoffContext::from_latest(latest_handoff.as_ref());
 
     let status = optional_string(task.get("status"));
     let mut blockers = Vec::new();
@@ -196,6 +201,7 @@ fn build_packet(ledger: &Value, task_id: &str) -> Result<ResumePacket> {
         &dependencies,
         &pending_acceptance,
         &blocking_gates,
+        &handoff,
     );
 
     Ok(ResumePacket {
@@ -210,6 +216,7 @@ fn build_packet(ledger: &Value, task_id: &str) -> Result<ResumePacket> {
         budget_tokens: task.get("budget_tokens").and_then(Value::as_u64),
         latest_handoff,
         relevant_refs,
+        handoff,
         dependencies,
         pending_acceptance,
         blocking_gates,
@@ -225,11 +232,15 @@ fn derive_next_action(
     dependencies: &[DependencyStatus],
     pending_acceptance: &[AcceptanceStatus],
     blocking_gates: &[BlockingGate],
+    handoff: &handoff_context::HandoffContext,
 ) -> String {
     if let Some(waiting_on) = waiting_on {
         return format!("wait for {waiting_on}, then wake task {task_id}");
     }
-    if let Some(dependency) = dependencies.iter().find(|dependency| dependency.status != "done") {
+    if let Some(dependency) = dependencies
+        .iter()
+        .find(|dependency| dependency.status != "done")
+    {
         return format!(
             "complete dependency {} before continuing {task_id}",
             dependency.id
@@ -246,6 +257,9 @@ fn derive_next_action(
     }
     if status == Some("done") {
         return "task is complete; no implementation work remains".to_string();
+    }
+    if let Some(next_action) = handoff.next_action_hint() {
+        return next_action.to_string();
     }
     format!("continue task {task_id} and collect deterministic verification evidence")
 }
