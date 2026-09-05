@@ -395,6 +395,18 @@ impl RuntimeHarness {
         Ok(())
     }
 
+    /// Remove a non-active account while serializing against provider/model
+    /// transitions. Active-account removal is rejected by the broker so the
+    /// running native client can never be orphaned from its credential metadata.
+    pub async fn remove_account(
+        &self,
+        provider: ProviderId,
+        account_id: impl Into<String>,
+    ) -> Result<u64, RuntimeHarnessError> {
+        let _transition = self.acquire_transition().await?;
+        Ok(self.broker.remove_account(provider, account_id).await?)
+    }
+
     pub async fn quota_snapshot(
         &self,
         provider: ProviderId,

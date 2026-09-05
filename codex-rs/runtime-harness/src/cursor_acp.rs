@@ -55,6 +55,10 @@ pub struct CursorAcpConfig {
     /// Explicit ACP executable. If omitted, CODEX_CURSOR_AGENT is honored,
     /// then `agent`, then legacy `cursor-agent` are attempted.
     pub executable: Option<PathBuf>,
+    /// Optional launcher arguments inserted before the required `acp` subcommand.
+    /// This supports stable wrappers/interpreters without changing the official
+    /// `agent acp` default invocation.
+    pub launcher_args: Vec<String>,
     pub process_cwd: Option<PathBuf>,
 }
 
@@ -356,6 +360,7 @@ impl AcpConnection {
         let mut last_not_found = None;
         for executable in candidates {
             let mut command = Command::new(&executable);
+            command.args(&config.launcher_args);
             command.arg("acp");
             if let Some(cwd) = config.process_cwd.as_deref() {
                 command.current_dir(cwd);

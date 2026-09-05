@@ -13,7 +13,6 @@ use codex_runtime_harness::RuntimeInteractionHandler;
 use codex_runtime_harness::RuntimeRouterError;
 use serde_json::Value;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -94,25 +93,22 @@ impl RuntimeInteractionHandler for AllowOnce {
     }
 }
 
-fn write_mock_agent(directory: &Path) -> std::path::PathBuf {
-    let path = directory.join("mock-agent");
-    fs::write(&path, MOCK_AGENT).unwrap();
-    let mut permissions = fs::metadata(&path).unwrap().permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&path, permissions).unwrap();
-    path
+fn mock_config(directory: &Path) -> CursorAcpConfig {
+    let script = directory.join("mock-agent.py");
+    fs::write(&script, MOCK_AGENT).unwrap();
+    CursorAcpConfig {
+        executable: Some("python3".into()),
+        launcher_args: vec![script.to_string_lossy().into_owned()],
+        process_cwd: Some(directory.to_path_buf()),
+    }
 }
 
 #[tokio::test]
 async fn cursor_acp_round_trips_stream_tool_and_permission_events() {
     let temp = tempfile::tempdir().unwrap();
-    let executable = write_mock_agent(temp.path());
-    let backend = CursorAcpBackend::connect(CursorAcpConfig {
-        executable: Some(executable),
-        process_cwd: Some(temp.path().to_path_buf()),
-    })
-    .await
-    .unwrap();
+    let backend = CursorAcpBackend::connect(mock_config(temp.path()))
+        .await
+        .unwrap();
 
     let session = backend.new_session(temp.path()).await.unwrap();
     assert_eq!(session.0, "mock-session");
@@ -159,13 +155,9 @@ async fn cursor_acp_round_trips_stream_tool_and_permission_events() {
 #[tokio::test]
 async fn cursor_acp_applies_selected_model_through_session_config() {
     let temp = tempfile::tempdir().unwrap();
-    let executable = write_mock_agent(temp.path());
-    let backend = CursorAcpBackend::connect(CursorAcpConfig {
-        executable: Some(executable),
-        process_cwd: Some(temp.path().to_path_buf()),
-    })
-    .await
-    .unwrap();
+    let backend = CursorAcpBackend::connect(mock_config(temp.path()))
+        .await
+        .unwrap();
 
     let session = backend
         .new_session_with_model(temp.path(), "composer")
@@ -184,13 +176,9 @@ async fn cursor_acp_applies_selected_model_through_session_config() {
 #[tokio::test]
 async fn cursor_acp_rejects_unavailable_selected_model() {
     let temp = tempfile::tempdir().unwrap();
-    let executable = write_mock_agent(temp.path());
-    let backend = CursorAcpBackend::connect(CursorAcpConfig {
-        executable: Some(executable),
-        process_cwd: Some(temp.path().to_path_buf()),
-    })
-    .await
-    .unwrap();
+    let backend = CursorAcpBackend::connect(mock_config(temp.path()))
+        .await
+        .unwrap();
 
     let error = backend
         .new_session_with_model(temp.path(), "not-a-real-model")
@@ -205,14 +193,10 @@ async fn cursor_acp_rejects_unavailable_selected_model() {
 #[tokio::test]
 async fn cursor_acp_cancel_bypasses_active_prompt_serialization() {
     let temp = tempfile::tempdir().unwrap();
-    let executable = write_mock_agent(temp.path());
     let backend = Arc::new(
-        CursorAcpBackend::connect(CursorAcpConfig {
-            executable: Some(executable),
-            process_cwd: Some(temp.path().to_path_buf()),
-        })
-        .await
-        .unwrap(),
+        CursorAcpBackend::connect(mock_config(temp.path()))
+            .await
+            .unwrap(),
     );
     let session = backend.new_session(temp.path()).await.unwrap();
     let collector = Arc::new(Collector::default());
@@ -249,13 +233,9 @@ async fn cursor_acp_cancel_bypasses_active_prompt_serialization() {
 #[tokio::test]
 async fn cursor_acp_transport_crash_requires_and_supports_reconnect() {
     let temp = tempfile::tempdir().unwrap();
-    let executable = write_mock_agent(temp.path());
-    let backend = CursorAcpBackend::connect(CursorAcpConfig {
-        executable: Some(executable),
-        process_cwd: Some(temp.path().to_path_buf()),
-    })
-    .await
-    .unwrap();
+    let backend = CursorAcpBackend::connect(mock_config(temp.path()))
+        .await
+        .unwrap();
     let session = backend.new_session(temp.path()).await.unwrap();
     let collector = Arc::new(Collector::default());
 
@@ -279,11 +259,7 @@ async fn cursor_acp_transport_crash_requires_and_supports_reconnect() {
 #[tokio::test]
 async fn lazy_cursor_recovers_crash_without_replaying_failed_prompt() {
     let temp = tempfile::tempdir().unwrap();
-    let executable = write_mock_agent(temp.path());
-    let backend = LazyCursorBackend::new(CursorAcpConfig {
-        executable: Some(executable),
-        process_cwd: Some(temp.path().to_path_buf()),
-    });
+    let backend = LazyCursorBackend::new(mock_config(temp.path()));
     let session = backend.create_session(temp.path()).await.unwrap();
     let collector = Arc::new(Collector::default());
 
