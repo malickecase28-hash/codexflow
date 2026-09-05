@@ -15,6 +15,10 @@ name = "codexflow"
 path = "src/bin/codexflow.rs"
 
 [[bin]]
+name = "codexflow-supervisor"
+path = "src/bin/codexflow-supervisor.rs"
+
+[[bin]]
 name = "logs_client"
 path = "src/bin/logs_client.rs"
 

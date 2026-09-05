@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codexflow.local/schema/benchmark-run.json",
+  "title": "CodexFlow Benchmark Run",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "suite_id",
+    "task_id",
+    "variant",
+    "source_identity",
+    "timing",
+    "tokens",
+    "tools",
+    "change",
+    "verification",
+    "capability_trace"
+  ],
+  "properties": {
+    "run_id": { "type": "string", "minLength": 1 },
+    "suite_id": { "type": "string", "minLength": 1 },
+    "task_id": { "type": "string", "minLength": 1 },
+    "variant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness", "provider", "model"],
+      "properties": {
+        "harness": { "type": "string", "enum": ["vanilla", "codexflow"] },
+        "provider": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "reasoning_effort": { "type": ["string", "null"] }
+      }
+    },
+    "source_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_commit", "codex_base_commit"],
+      "properties": {
+        "project_commit": { "type": "string", "minLength": 1 },
+        "codex_base_commit": { "type": "string", "minLength": 1 },
+        "codexflow_commit": { "type": ["string", "null"] },
+        "capability_manifest_version": { "type": ["string", "null"] }
+      }
+    },
+    "timing": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["wall_ms"],
+      "properties": {
+        "wall_ms": { "type": "integer", "minimum": 0 },
+        "routing_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "first_tool_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "first_edit_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "first_green_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "verification_ms": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "tokens": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["input", "output", "total"],
+      "properties": {
+        "input": { "type": "integer", "minimum": 0 },
+        "cached_input": { "type": ["integer", "null"], "minimum": 0 },
+        "output": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "subagents": { "type": ["integer", "null"], "minimum": 0 },
+        "profile_context": { "type": ["integer", "null"], "minimum": 0 },
+        "suppressed_catalog": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["calls"],
+      "properties": {
+        "calls": { "type": "integer", "minimum": 0 },
+        "retries": { "type": ["integer", "null"], "minimum": 0 },
+        "result_bytes_exposed": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["files_touched", "lines_added", "lines_deleted"],
+      "properties": {
+        "files_touched": { "type": "integer", "minimum": 0 },
+        "files_created": { "type": ["integer", "null"], "minimum": 0 },
+        "files_deleted": { "type": ["integer", "null"], "minimum": 0 },
+        "lines_added": { "type": "integer", "minimum": 0 },
+        "lines_deleted": { "type": "integer", "minimum": 0 },
+        "dependencies_added": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["passed"],
+      "properties": {
+        "passed": { "type": "boolean" },
+        "hidden_tests_passed": { "type": ["boolean", "null"] },
+        "review_findings_critical": { "type": ["integer", "null"], "minimum": 0 },
+        "review_findings_high": { "type": ["integer", "null"], "minimum": 0 },
+        "review_findings_medium": { "type": ["integer", "null"], "minimum": 0 },
+        "review_findings_low": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "capability_trace": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["kernel", "profiles", "flows", "tools", "specialists"],
+      "properties": {
+        "kernel": { "type": "array", "items": { "type": "string" } },
+        "profiles": { "type": "array", "items": { "type": "string" } },
+        "flows": { "type": "array", "items": { "type": "string" } },
+        "tools": { "type": "array", "items": { "type": "string" } },
+        "specialists": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

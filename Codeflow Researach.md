@@ -176,12 +176,12 @@ One of the most powerful harness tricks is realizing:
 
 Suppose you need to:
 
-* fetch 100 records
-* filter them
-* calculate values
-* deduplicate them
-* rank them
-* select five
+- fetch 100 records
+- filter them
+- calculate values
+- deduplicate them
+- rank them
+- select five
 
 A poor harness makes the model perform all of that.
 
@@ -202,7 +202,7 @@ Useful capabilities include:
 97. Deterministic parsing.
 98. Deterministic sorting.
 99. Deterministic arithmetic.
-100. Deterministic schema conversion.
+100.  Deterministic schema conversion.
 
 Anthropic and OpenAI both increasingly support this pattern because it prevents large intermediate results from filling model context unnecessarily. ([Anthropic][7])
 
@@ -527,12 +527,12 @@ Examples:
 
 Each skill can include:
 
-* instructions
-* examples
-* scripts
-* templates
-* reference files
-* tools
+- instructions
+- examples
+- scripts
+- templates
+- reference files
+- tools
 
 Anthropic's Agent Skills architecture uses this progressive-disclosure approach: specialized instructions and resources are discovered and loaded only when relevant. ([Anthropic][12])
 
@@ -774,11 +774,11 @@ The harness can dynamically choose:
 
 You do not need Sol/Opus-class intelligence for:
 
-* classifying a file
-* extracting metadata
-* sorting search results
-* summarizing a tool response
-* choosing between three simple routes
+- classifying a file
+- extracting metadata
+- sorting search results
+- summarizing a tool response
+- choosing between three simple routes
 
 Save expensive intelligence for where it matters.
 
@@ -828,10 +828,10 @@ Better primitives include:
 
 Poor editing interfaces force the model to regenerate giant files, increasing:
 
-* token usage
-* accidental deletions
-* regressions
-* hallucinated code
+- token usage
+- accidental deletions
+- regressions
+- hallucinated code
 
 SWE-agent's research is especially relevant here because its core thesis is that the **agent-computer interface itself** materially affects LM performance. ([arXiv][17])
 
@@ -1080,12 +1080,12 @@ Now the agent can try things instead of merely reasoning about what might happen
 
 Long jobs should survive:
 
-* context exhaustion
-* model failure
-* tool failure
-* process crash
-* deployment
-* human interruption
+- context exhaustion
+- model failure
+- tool failure
+- process crash
+- deployment
+- human interruption
 
 Capabilities:
 
@@ -1542,9 +1542,9 @@ Bad:
 
 ```json
 {
- "a8fz19":7,
- "e19kq":"0x12ad",
- "status_code":4172
+  "a8fz19": 7,
+  "e19kq": "0x12ad",
+  "status_code": 4172
 }
 ```
 
@@ -1760,4 +1760,3 @@ It is:
 > **"What is the minimum model intelligence required when the surrounding system supplies memory, executive control, search, computation, verification and recovery?"**
 
 That question is much more important for local AI than most benchmark leaderboards make it appear.
-

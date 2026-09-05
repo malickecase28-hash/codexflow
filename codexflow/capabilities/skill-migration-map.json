@@ -1,0 +1,507 @@
+{
+  "schema": 1,
+  "purpose": "Map current model-visible skills into CodexFlow harness primitives without keeping the whole catalog in model context.",
+  "dispositions": {
+    "kernel": "Always-on or state-machine behavior below the model. No full skill prompt.",
+    "event_flow": "Deterministic trigger starts a workflow, interceptor, or gate. Only compact task facts reach the model.",
+    "auto_profile": "Task/project classifier activates a compact quality/domain policy. Full source skill is not loaded.",
+    "tool_adapter": "Capability is exposed as a tool/connector, not a skill description.",
+    "specialist_module": "Rare or style-specific knowledge remains lazy and is loaded only when explicitly/reliably triggered.",
+    "project_playbook": "Repository-specific operational knowledge remains project-local and lazy.",
+    "command_view": "Becomes a CLI/TUI command or report rather than model guidance."
+  },
+  "capabilities": [
+    {
+      "id": "transport.context_budget",
+      "disposition": "kernel",
+      "sources": ["Headroom"],
+      "trigger": "every model request when enabled",
+      "context": "none",
+      "behavior": "Compression/token transport middleware with health checks, metrics, and bypass."
+    },
+    {
+      "id": "navigation.semantic",
+      "disposition": "tool_adapter",
+      "sources": ["Serena"],
+      "trigger": "code exploration and edit planning when semantic service is healthy",
+      "context": "none",
+      "behavior": "Prefer symbols, definitions, references, and semantic navigation before raw repository scans."
+    },
+    {
+      "id": "policy.minimal_change",
+      "disposition": "kernel",
+      "sources": ["Ponytail", "ponytail", "one-line-first", "change-budget"],
+      "trigger": "every code, config-semantic, test, build, or repository-structure change",
+      "context": "compact",
+      "behavior": "Prefer the smallest correct change; enforce deterministic budgets for new files, dependencies, crates, abstractions, and diff growth."
+    },
+    {
+      "id": "policy.response_completeness",
+      "disposition": "kernel",
+      "sources": ["output-skill"],
+      "trigger": "explicit exhaustive/full/untruncated output request",
+      "context": "none",
+      "behavior": "Prevent accidental truncation when exhaustive output is explicitly required."
+    },
+    {
+      "id": "process.controller",
+      "disposition": "kernel",
+      "sources": ["using-superpowers", "trinity-quality-spine"],
+      "trigger": "task classification",
+      "context": "none",
+      "behavior": "Select the smallest useful lifecycle: answer, inspect, plan, implement, verify, review, deliver."
+    },
+    {
+      "id": "completion.evidence_gate",
+      "disposition": "kernel",
+      "sources": ["verification-before-completion"],
+      "trigger": "before any engineering completion claim",
+      "context": "none",
+      "behavior": "Require direct verification evidence appropriate to the task before completion."
+    },
+    {
+      "id": "routing.departments",
+      "disposition": "kernel",
+      "sources": ["trinity-operations-and-research-spine"],
+      "trigger": "projects declaring engineering departments",
+      "context": "none",
+      "behavior": "Generalize to CapabilityRouter; project manifests declare available departments and blocking rules."
+    },
+    {
+      "id": "quality.frontend",
+      "disposition": "auto_profile",
+      "sources": ["design", "design-system", "gpt-tasteskill", "high-end-visual-design", "impeccable", "taste-skill", "ui-styling"],
+      "trigger": "frontend/UI generation, redesign, or visual review",
+      "context": "compact",
+      "behavior": "Default anti-generic UI policy: hierarchy, typography, spacing, responsive behavior, accessibility, coherent tokens, intentional motion, and non-template composition."
+    },
+    {
+      "id": "quality.frontend_motion",
+      "disposition": "auto_profile",
+      "sources": ["animation-systems"],
+      "trigger": "UI task includes motion, animation, transition, or choreography",
+      "context": "compact",
+      "behavior": "Motion quality, easing, reduced-motion behavior, and choreography defaults."
+    },
+    {
+      "id": "gate.frontend_animation_performance",
+      "disposition": "event_flow",
+      "sources": ["optimize-web-animations"],
+      "trigger": "animation added/changed or animation-performance request",
+      "context": "compact",
+      "behavior": "Profile jank, leaks, CPU/GPU pressure, and animation regressions before completion."
+    },
+    {
+      "id": "quality.writing",
+      "disposition": "auto_profile",
+      "sources": ["humanizer"],
+      "trigger": "user-facing prose generation or rewrite unless exact/legal/verbatim mode",
+      "context": "compact",
+      "behavior": "Remove generic AI cadence and filler while preserving requested voice, meaning, register, and technical precision."
+    },
+    {
+      "id": "quality.brand",
+      "disposition": "auto_profile",
+      "sources": ["brand"],
+      "trigger": "brand/marketing/identity task or project brand manifest present",
+      "context": "compact",
+      "behavior": "Apply project brand voice, visual identity, messaging, and asset consistency."
+    },
+    {
+      "id": "profile.frontend_shadcn",
+      "disposition": "auto_profile",
+      "sources": ["shadcn-ui"],
+      "trigger": "project uses shadcn/Radix/Tailwind or user requests them",
+      "context": "compact",
+      "behavior": "Use accessible native project components and variants before inventing replacements."
+    },
+    {
+      "id": "profile.react_next",
+      "disposition": "auto_profile",
+      "sources": ["vercel-react-best-practices"],
+      "trigger": "React/Next project or touched files",
+      "context": "compact",
+      "behavior": "Performance-aware data fetching, component boundaries, rendering, and bundle discipline."
+    },
+    {
+      "id": "profile.react_native",
+      "disposition": "auto_profile",
+      "sources": ["vercel-react-native-skills"],
+      "trigger": "React Native/Expo project or touched files",
+      "context": "compact",
+      "behavior": "Mobile-native performance, animation, module, and rendering practices."
+    },
+    {
+      "id": "flow.visual_fidelity",
+      "disposition": "event_flow",
+      "sources": ["image-to-code"],
+      "trigger": "user supplies a screenshot/reference image and asks for implementation",
+      "context": "compact",
+      "behavior": "Reference analysis -> fidelity plan -> implementation -> visual verification."
+    },
+    {
+      "id": "flow.redesign",
+      "disposition": "event_flow",
+      "sources": ["redesign-skill"],
+      "trigger": "existing site/app redesign request",
+      "context": "compact",
+      "behavior": "Audit first, preserve functionality, apply frontend quality profile, verify regressions."
+    },
+    {
+      "id": "creative.specialists",
+      "disposition": "specialist_module",
+      "sources": ["banner-design", "brandkit", "brutalist-skill", "imagegen-frontend-mobile", "imagegen-frontend-web", "minimalist-ui", "slides", "stitch-skill", "taste-skill-v1", "threejs"],
+      "trigger": "explicit artifact/style/platform/3D intent",
+      "context": "lazy",
+      "behavior": "Keep style-specific or rare creative knowledge out of baseline context; load only the selected module."
+    },
+    {
+      "id": "profile.low_latency",
+      "disposition": "auto_profile",
+      "sources": ["low-latency-engineering", "protocol-engineering", "serialization-engineering"],
+      "trigger": "project declares low_latency and task touches data plane, networking, protocol, serialization, or performance",
+      "context": "compact",
+      "behavior": "Measurement-first low-latency defaults, explicit backpressure, allocation/message-size discipline, and protocol correctness."
+    },
+    {
+      "id": "low_latency.specialists",
+      "disposition": "specialist_module",
+      "sources": ["distributed-vps-networking", "kernel-bypass-and-messaging", "linux-network-fastpath", "trading-time-sync"],
+      "trigger": "specific WAN/VPS, kernel-bypass, Linux NIC fastpath, or time-sync task",
+      "context": "subagent",
+      "behavior": "Rare expert knowledge loads only into the relevant specialist context."
+    },
+    {
+      "id": "gate.performance_evidence",
+      "disposition": "event_flow",
+      "sources": ["latency-benchmarking", "rust-performance-engineering", "bloat-budget"],
+      "trigger": "performance/latency/binary-size claim or optimization",
+      "context": "compact",
+      "behavior": "Require before/after measurement, tail metrics where relevant, and evidence that the optimization addresses the measured bottleneck."
+    },
+    {
+      "id": "tools.media_docs_browser",
+      "disposition": "tool_adapter",
+      "sources": ["imagegen", "openai-docs", "browser", "chrome", "computer-use", "visualize"],
+      "trigger": "matching user intent",
+      "context": "none",
+      "behavior": "Expose direct capabilities through the tool router rather than skill catalog entries."
+    },
+    {
+      "id": "tools.google_workspace",
+      "disposition": "tool_adapter",
+      "sources": ["google-drive", "google-docs", "google-sheets", "google-slides", "google-drive-comments"],
+      "trigger": "matching connected-resource intent",
+      "context": "none",
+      "behavior": "Route to connected Google tools without adding skill descriptions to the model prompt."
+    },
+    {
+      "id": "tools.artifacts_office",
+      "disposition": "tool_adapter",
+      "sources": ["pdf", "spreadsheets", "excel-live-control"],
+      "trigger": "matching artifact or active Office-session intent",
+      "context": "none",
+      "behavior": "Route directly to artifact/Office engines."
+    },
+    {
+      "id": "extensions.authoring",
+      "disposition": "event_flow",
+      "sources": ["plugin-creator", "skill-creator", "writing-skills"],
+      "trigger": "create/update skill or plugin request",
+      "context": "compact",
+      "behavior": "Author extension in quarantine/worktree, validate schema/tests, then pass through install-security gate before activation."
+    },
+    {
+      "id": "extensions.install_security",
+      "disposition": "event_flow",
+      "sources": ["skill-installer", "plugin-management", "SkillSpector"],
+      "trigger": "before any skill, plugin, MCP, or harness-extension activation",
+      "context": "none",
+      "behavior": "Quarantine source -> provenance/permission inspection -> SkillSpector static scan -> policy-selected semantic scan -> structured report -> blocking TUI decision -> transactional install."
+    },
+    {
+      "id": "external.sites",
+      "disposition": "specialist_module",
+      "sources": ["sites-building", "sites-hosting"],
+      "trigger": "explicit Sites build/publish task",
+      "context": "lazy",
+      "behavior": "Keep external app-specific operating knowledge lazy."
+    },
+    {
+      "id": "minimality.review_and_metrics",
+      "disposition": "event_flow",
+      "sources": ["ponytail-review", "ponytail-audit"],
+      "trigger": "diff review or repository complexity audit",
+      "context": "compact",
+      "behavior": "Review over-engineering and removable complexity as a native review/caretaker pass."
+    },
+    {
+      "id": "minimality.views",
+      "disposition": "command_view",
+      "sources": ["ponytail-debt", "ponytail-gain", "ponytail-help"],
+      "trigger": "explicit CLI/TUI command",
+      "context": "none",
+      "behavior": "Render debt, impact, and help directly without a model skill."
+    },
+    {
+      "id": "profile.rust",
+      "disposition": "auto_profile",
+      "sources": ["rust-core-engineering", "rust-async-tokio", "rust-concurrency-determinism"],
+      "trigger": "Rust project/file touch; async/concurrency fragments activate only when matching symbols/tasks are present",
+      "context": "compact",
+      "behavior": "Idiomatic ownership/error/invariant rules with conditional async and determinism overlays."
+    },
+    {
+      "id": "gate.unsafe_boundary",
+      "disposition": "event_flow",
+      "sources": ["rust-unsafe-ffi-wire"],
+      "trigger": "unsafe, FFI, memory-map, byte decoding, alignment, or endianness change",
+      "context": "compact",
+      "behavior": "Require boundary invariants, safety reasoning, and focused verification."
+    },
+    {
+      "id": "verification.rust",
+      "disposition": "event_flow",
+      "sources": ["rust-testing-verification"],
+      "trigger": "Rust bugfix, new invariant, unsafe/concurrency/parser change",
+      "context": "compact",
+      "behavior": "Select the smallest relevant combination of tests, property checks, fuzzing, Miri, Loom, mutation, or differential verification."
+    },
+    {
+      "id": "gate.rust_supply_chain",
+      "disposition": "event_flow",
+      "sources": ["rust-supply-chain"],
+      "trigger": "dependency/source/license/action change",
+      "context": "compact",
+      "behavior": "Dependency provenance, advisory, license, and source checks before acceptance."
+    },
+    {
+      "id": "gate.rust_compatibility",
+      "disposition": "event_flow",
+      "sources": ["rust-api-msrv"],
+      "trigger": "public API, MSRV, toolchain, or feature-matrix change",
+      "context": "compact",
+      "behavior": "Protect supported compiler/API/feature contracts."
+    },
+    {
+      "id": "gate.financial_core",
+      "disposition": "event_flow",
+      "sources": ["trading-financial-core-change-control"],
+      "trigger": "project manifest marks touched paths as financially consequential",
+      "context": "subagent",
+      "behavior": "Independent blocking review for execution/OMS/gateway/reconciliation/readiness/halt invariants."
+    },
+    {
+      "id": "caretaker.repository",
+      "disposition": "event_flow",
+      "sources": ["repo-caretaker", "dead-surface-pruner"],
+      "trigger": "explicit maintenance request or scheduled caretaker scan",
+      "context": "compact",
+      "behavior": "Discover bounded maintenance, prune dead surfaces with evidence, and stop at configured delivery authority."
+    },
+    {
+      "id": "gate.parser_security",
+      "disposition": "event_flow",
+      "sources": ["protocol-parser-hardening"],
+      "trigger": "framing/protobuf/FIX/binary parser change",
+      "context": "subagent",
+      "behavior": "Bounds, malformed-input behavior, fuzzing, conformance vectors, and parser differential checks."
+    },
+    {
+      "id": "release.provenance",
+      "disposition": "event_flow",
+      "sources": ["release-provenance"],
+      "trigger": "release/tag/package/publish event",
+      "context": "compact",
+      "behavior": "Source identity, checksums, dependency inventory, SBOM/attestation policy, and release evidence."
+    },
+    {
+      "id": "review.engine",
+      "disposition": "event_flow",
+      "sources": ["rust-code-review", "lean-code-review", "code-review", "code-review-breaking-changes", "code-review-change-size", "code-review-context", "code-review-testing"],
+      "trigger": "non-trivial implementation reaches verified state or explicit review",
+      "context": "subagent",
+      "behavior": "Fresh-context independent review with deterministic checks for change size, tests, breaking behavior, context, correctness, and unnecessary complexity."
+    },
+    {
+      "id": "profile.observability",
+      "disposition": "auto_profile",
+      "sources": ["rust-observability-diagnostics", "observability-slo-engineering"],
+      "trigger": "tracing, metrics, diagnostics, SLO, alert, or production-evidence work",
+      "context": "compact",
+      "behavior": "Evidence-oriented observability, secret-safe logs, actionable metrics, and SLO-aware alerting."
+    },
+    {
+      "id": "gate.repository_authority_shape",
+      "disposition": "event_flow",
+      "sources": ["single-authority", "semantic-deduplication", "repo-shape-guardian", "crate-boundary-auditor", "complexity-budget", "dependency-boundary-governance"],
+      "trigger": "new authority/file/folder/crate/dependency edge or suspicious duplication/complexity",
+      "context": "none",
+      "behavior": "Discover existing authority first; reject accidental duplicate responsibility and unjustified repository growth."
+    },
+    {
+      "id": "flow.post_green_simplification",
+      "disposition": "event_flow",
+      "sources": ["post-implementation-simplifier"],
+      "trigger": "first implementation verification becomes green",
+      "context": "compact",
+      "behavior": "Run one bounded simplification pass before review."
+    },
+    {
+      "id": "simplification.campaign",
+      "disposition": "specialist_module",
+      "sources": ["safe-simplification-campaign"],
+      "trigger": "explicit broad simplification/cleanup campaign",
+      "context": "lazy",
+      "behavior": "Characterize behavior and simplify incrementally rather than applying automatic code golf."
+    },
+    {
+      "id": "build.cost_manager",
+      "disposition": "kernel",
+      "sources": ["fast-feedback-loop", "developer-experience"],
+      "trigger": "every build/test/tooling decision",
+      "context": "none",
+      "behavior": "Prefer check/focused tests/incremental caches; preserve target caches; escalate to full/release builds only when required."
+    },
+    {
+      "id": "profile.typed_core",
+      "disposition": "auto_profile",
+      "sources": ["typed-core-boundary"],
+      "trigger": "typed-language internal API/boundary work",
+      "context": "compact",
+      "behavior": "Keep dynamic JSON/stringly contracts at external boundaries rather than spreading them into the typed core."
+    },
+    {
+      "id": "flow.requirements_planning_execution",
+      "disposition": "event_flow",
+      "sources": ["brainstorming", "writing-plans", "executing-plans"],
+      "trigger": "material ambiguity or multi-step/non-trivial task",
+      "context": "compact",
+      "behavior": "Skip ceremony for clear small work; otherwise resolve material ambiguity, create an executable plan, then track execution."
+    },
+    {
+      "id": "profile.test_strategy_tdd",
+      "disposition": "auto_profile",
+      "sources": ["test-driven-development"],
+      "trigger": "new behavior/bugfix where an executable test can express the requirement",
+      "context": "compact",
+      "behavior": "Use red/green/cleanup when it adds signal; do not force TDD for tasks where it is artificial."
+    },
+    {
+      "id": "flow.failure_recovery",
+      "disposition": "event_flow",
+      "sources": ["systematic-debugging"],
+      "trigger": "first meaningful test/tool/runtime failure or repeated unsuccessful edit",
+      "context": "compact",
+      "behavior": "Stop blind retries, identify root cause and evidence, then change the smallest causal surface."
+    },
+    {
+      "id": "flow.review_handoff",
+      "disposition": "event_flow",
+      "sources": ["requesting-code-review", "receiving-code-review"],
+      "trigger": "verified implementation or incoming review findings",
+      "context": "compact",
+      "behavior": "Prepare concise review evidence; evaluate feedback against repository facts before editing."
+    },
+    {
+      "id": "agents.topology",
+      "disposition": "event_flow",
+      "sources": ["subagent-driven-development", "dispatching-parallel-agents"],
+      "trigger": "task decomposition yields bounded independent work",
+      "context": "none",
+      "behavior": "Choose single worker, sequential specialists, or parallel disjoint workers without loading orchestration playbooks into every agent."
+    },
+    {
+      "id": "delivery.branch_pr",
+      "disposition": "event_flow",
+      "sources": ["finishing-a-development-branch", "using-git-worktrees", "babysit-pr", "codex-pr-body"],
+      "trigger": "parallel isolation, branch finalization, PR creation, or PR update",
+      "context": "compact",
+      "behavior": "Worktree/branch lifecycle, evidence-aware PR body, CI/watch loop, and merge-readiness gate."
+    },
+    {
+      "id": "department.sre",
+      "disposition": "event_flow",
+      "sources": ["production-sre"],
+      "trigger": "production reliability, capacity, readiness, recovery, or SLO-impacting change",
+      "context": "subagent",
+      "behavior": "Independent SRE gate when activated."
+    },
+    {
+      "id": "department.security",
+      "disposition": "event_flow",
+      "sources": ["security-threat-modeling", "secrets-identity-access", "application-security-assurance"],
+      "trigger": "new trust boundary, credentials/permissions, external attack surface, dependency risk, or scheduled security scan",
+      "context": "subagent",
+      "behavior": "Threat, identity/secrets, and application-security gates selected independently by task facts."
+    },
+    {
+      "id": "department.infrastructure_deployment",
+      "disposition": "event_flow",
+      "sources": ["infrastructure-as-code", "host-configuration-deployment"],
+      "trigger": "cloud/VPS/IaC/host/systemd/firewall/certificate/kernel/NIC/deployment task",
+      "context": "subagent",
+      "behavior": "Deployment planning and rollback-aware execution; infrastructure work never wakes for ordinary code tasks."
+    },
+    {
+      "id": "department.incident_chaos",
+      "disposition": "event_flow",
+      "sources": ["incident-response", "failure-chaos-engineering"],
+      "trigger": "incident/outage/data-loss anomaly or explicit controlled chaos experiment",
+      "context": "subagent",
+      "behavior": "Incident mode can preempt normal feature automation; chaos remains explicit and bounded."
+    },
+    {
+      "id": "department.architecture",
+      "disposition": "event_flow",
+      "sources": ["architecture-governance"],
+      "trigger": "cross-cutting ownership/protocol/deployment boundary change",
+      "context": "subagent",
+      "behavior": "Architecture gate with ADR/authority implications when material."
+    },
+    {
+      "id": "department.data",
+      "disposition": "event_flow",
+      "sources": ["data-reliability-governance", "data-lineage-contracts"],
+      "trigger": "dataset/schema/timestamp/provenance/reproducibility change",
+      "context": "subagent",
+      "behavior": "Data integrity and evidence-lineage gates."
+    },
+    {
+      "id": "department.quant",
+      "disposition": "event_flow",
+      "sources": ["quant-research-validation", "quant-evidence-gate"],
+      "trigger": "quant/research experiment, strategy claim, or production-promotion decision",
+      "context": "subagent",
+      "behavior": "Research validity and promotion evidence remain independent blocking gates."
+    },
+    {
+      "id": "build.release_engineering",
+      "disposition": "event_flow",
+      "sources": ["build-release-engineering"],
+      "trigger": "CI/cache/reproducible-build/package/release task",
+      "context": "compact",
+      "behavior": "Cloud/local build policy, caching, artifact identity, qualification, and rollback-ready packaging."
+    },
+    {
+      "id": "codex.project_playbooks",
+      "disposition": "project_playbook",
+      "sources": ["path-types", "remote-tests", "test-tui", "update-v8-version"],
+      "trigger": "only while working on the Codex source project and matching task",
+      "context": "lazy",
+      "behavior": "Keep repository-specific maintenance knowledge out of generic CodexFlow behavior."
+    }
+  ],
+  "aliases": {
+    "brutalist-skill": ["industrial-brutalist-ui"],
+    "gpt-tasteskill": ["gpt-taste"],
+    "high-end-visual-design": ["soft-skill"],
+    "output-skill": ["full-output-enforcement"],
+    "redesign-skill": ["redesign-existing-projects"],
+    "stitch-skill": ["stitch-design-taste"],
+    "taste-skill": ["design-taste-frontend"],
+    "taste-skill-v1": ["design-taste-frontend-v1"],
+    "browser": ["control-in-app-browser"],
+    "chrome": ["control-chrome"]
+  }
+}
