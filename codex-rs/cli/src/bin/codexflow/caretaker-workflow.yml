@@ -1,0 +1,75 @@
+name: CodexFlow Caretaker
+
+on:
+  schedule:
+    - cron: "23 4 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  caretaker:
+    if: vars.CODEXFLOW_CARETAKER_ENABLED == 'true'
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install CodexFlow prebuilt
+        shell: pwsh
+        run: |
+          $script = Join-Path $env:RUNNER_TEMP "install-codexflow.ps1"
+          Invoke-WebRequest "https://raw.githubusercontent.com/malickecase28-hash/codexflow/main/codexflow/phase2c/scripts/install-prebuilt.ps1" -OutFile $script
+          & $script -InstallDir (Join-Path $env:RUNNER_TEMP "codexflow")
+          "$(Join-Path $HOME '.codexflow\bin')" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Register project
+        shell: pwsh
+        run: codexflow project add "${{ github.repository }}" --root "$env:GITHUB_WORKSPACE"
+
+      - name: Deterministic maintenance scan
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force ".codexflow\state" | Out-Null
+          codexflow caretaker scan --json | Set-Content -Encoding UTF8 ".codexflow\state\caretaker-scan.json"
+
+      - name: Upload scan
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: codexflow-caretaker-scan
+          path: .codexflow/state/caretaker-scan.json
+
+      - name: Autonomous low-risk patch
+        if: vars.CODEXFLOW_CARETAKER_AUTOFIX == 'true' && secrets.OPENAI_API_KEY != ''
+        shell: pwsh
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $branch = "codexflow/caretaker-${{ github.run_id }}"
+          git checkout -b $branch
+          $scan = Get-Content -Raw ".codexflow\state\caretaker-scan.json"
+          $prompt = @"
+          You are a CodexFlow caretaker worker.
+          Read the deterministic scan below and select at most ONE low-risk maintenance finding.
+          Make the smallest justified patch. Do not touch production credentials, deployment,
+          security authority, financial authority, persistent schemas, or other high-risk surfaces.
+          Run focused verification. If no safe low-risk patch is justified, make no changes.
+
+          SCAN:
+          $scan
+          "@
+          $codex = Join-Path $env:RUNNER_TEMP "codexflow\codex.exe"
+          & $codex exec --full-auto $prompt
+          if ((git status --porcelain).Length -eq 0) {
+            Write-Host "No caretaker patch produced."
+            exit 0
+          }
+          git add -A
+          git commit -m "chore: CodexFlow caretaker maintenance"
+          git push --set-upstream origin $branch
+          gh pr create --draft --base "${{ github.event.repository.default_branch }}" --head $branch --title "chore: CodexFlow caretaker maintenance" --body "Automated low-risk maintenance candidate. Review required before merge."

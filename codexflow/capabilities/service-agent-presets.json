@@ -1,0 +1,99 @@
+{
+  "schema": 1,
+  "presets": [
+    {
+      "id": "pr-guardian",
+      "role": "flow_reviewer",
+      "trigger": {
+        "kind": "event",
+        "events": ["pr.opened", "pr.review_changed", "ci.failed", "ci.completed"]
+      },
+      "capabilities": [
+        "review.engine",
+        "completion.evidence_gate",
+        "delivery.github"
+      ],
+      "default_permissions": {
+        "filesystem": "workspace-write",
+        "network": "project-policy",
+        "delivery": "draft_pr_only"
+      },
+      "purpose": "Watch PR/check/review state, classify actionable failures, prepare bounded fixes when policy allows, and report results."
+    },
+    {
+      "id": "self-heal-ci",
+      "role": "flow_worker",
+      "trigger": {
+        "kind": "event",
+        "events": ["ci.failed", "test.regression"]
+      },
+      "capabilities": [
+        "process.debug",
+        "policy.minimal_change",
+        "completion.evidence_gate",
+        "review.engine"
+      ],
+      "default_permissions": {
+        "filesystem": "workspace-write",
+        "network": "project-policy",
+        "delivery": "draft_pr_only"
+      },
+      "purpose": "Reproduce a regression, make the smallest repair, verify it, request fresh review, and stop at a draft PR."
+    },
+    {
+      "id": "quality-sweeper",
+      "role": "flow_explorer",
+      "trigger": {
+        "kind": "schedule",
+        "schedule": "weekly"
+      },
+      "capabilities": [
+        "minimality.review_and_metrics",
+        "caretaker.repository",
+        "policy.minimal_change"
+      ],
+      "default_permissions": {
+        "filesystem": "read-only",
+        "network": "none",
+        "delivery": "report_only"
+      },
+      "purpose": "Find bounded complexity, duplication, dead-surface, and repository-shape opportunities without performing broad cleanup automatically."
+    },
+    {
+      "id": "dependency-scout",
+      "role": "flow_explorer",
+      "trigger": {
+        "kind": "schedule",
+        "schedule": "weekly"
+      },
+      "capabilities": [
+        "gate.rust_supply_chain",
+        "release.provenance"
+      ],
+      "default_permissions": {
+        "filesystem": "read-only",
+        "network": "project-policy",
+        "delivery": "report_only"
+      },
+      "purpose": "Check advisories, source/license drift, and dependency update candidates under project policy."
+    },
+    {
+      "id": "benchmark-runner",
+      "role": "flow_verifier",
+      "trigger": {
+        "kind": "event",
+        "events": ["harness.changed", "release.candidate", "benchmark.requested"]
+      },
+      "capabilities": [
+        "benchmark.runner",
+        "completion.evidence_gate"
+      ],
+      "default_permissions": {
+        "filesystem": "workspace-write",
+        "network": "project-policy",
+        "delivery": "report_only"
+      },
+      "purpose": "Run isolated benchmark cells and produce reproducible harness/model comparison evidence."
+    }
+  ]
+}

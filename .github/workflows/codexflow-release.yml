@@ -1,0 +1,472 @@
+name: codexflow-release
+
+on:
+  push:
+    branches:
+      - codexflow/phase3c-event-runtime-master-map
+    tags:
+      - "codexflow-v*"
+    paths:
+      - "codex-rs/**"
+      - "codexflow-npm/**"
+      - ".github/actions/setup-rusty-v8/**"
+      - ".github/actions/setup-msvc-env/**"
+      - ".github/workflows/codexflow-prebuilt-windows.yml"
+      - ".github/workflows/codexflow-release.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Semantic version for the CodexFlow release, without the codexflow-v prefix.
+        required: true
+        default: 0.1.0-alpha.1
+        type: string
+
+concurrency:
+  group: codexflow-release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      npm_asset: ${{ steps.release.outputs.npm_asset }}
+      edge: ${{ steps.release.outputs.edge }}
+    steps:
+      - id: release
+        name: Resolve release identity
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          edge=false
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            version="${INPUT_VERSION}"
+            tag="codexflow-v${version}"
+            npm_asset="codexflow-npm-${version}.tgz"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#codexflow-v}"
+            npm_asset="codexflow-npm-${version}.tgz"
+          else
+            version="0.1.0-edge.${GITHUB_RUN_NUMBER}"
+            tag="codexflow-edge"
+            npm_asset="codexflow-npm-edge.tgz"
+            edge=true
+          fi
+
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid CodexFlow release version: $version" >&2
+            exit 1
+          fi
+          if [[ "$edge" != "true" && "$tag" != "codexflow-v${version}" ]]; then
+            echo "Release tag/version mismatch: tag=$tag version=$version" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "npm_asset=$npm_asset" >> "$GITHUB_OUTPUT"
+          echo "edge=$edge" >> "$GITHUB_OUTPUT"
+
+  build-native:
+    needs: prepare
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_CACHE_SIZE: 10G
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            exe_suffix: ""
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            exe_suffix: ""
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            exe_suffix: ""
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            exe_suffix: ""
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            exe_suffix: ".exe"
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            exe_suffix: ".exe"
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - name: Install Rust 1.98.1
+        uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e
+        with:
+          toolchain: "1.98.1"
+          targets: ${{ matrix.target }}
+
+      - name: Restore Cargo dependency cache
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: codexflow-release-cargo-${{ runner.os }}-${{ matrix.target }}-rust-1.98.1-${{ hashFiles('codex-rs/Cargo.lock') }}
+          restore-keys: |
+            codexflow-release-cargo-${{ runner.os }}-${{ matrix.target }}-rust-1.98.1-
+
+      - name: Install sccache
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: sccache
+
+      - name: Configure sccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${ACTIONS_CACHE_URL:-}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          else
+            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
+            echo "SCCACHE_DIR=${RUNNER_TEMP}/codexflow-sccache" >> "$GITHUB_ENV"
+          fi
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
+      - name: Configure rusty_v8 artifact overrides and verify checksums
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Configure MSVC environment
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/setup-msvc-env
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Build complete CodexFlow release runtime
+        shell: bash
+        working-directory: codex-rs
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          if [[ "$TARGET" == *-pc-windows-msvc ]]; then
+            export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
+          fi
+          cargo build \
+            --locked \
+            --release \
+            --target "$TARGET" \
+            -p codex-cli \
+            --bin codex \
+            --bin codexflow \
+            --bin codexflow-supervisor
+          cargo build \
+            --locked \
+            --release \
+            --target "$TARGET" \
+            -p codex-code-mode-host \
+            --bin codex-code-mode-host
+
+      - name: Stage release binaries
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          EXE_SUFFIX: ${{ matrix.exe_suffix }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for binary in codex codexflow codexflow-supervisor codex-code-mode-host; do
+            source="$CARGO_TARGET_DIR/$TARGET/release/${binary}${EXE_SUFFIX}"
+            destination="dist/${binary}-${TARGET}${EXE_SUFFIX}"
+            if [[ ! -f "$source" ]]; then
+              echo "Expected release binary not found: $source" >&2
+              exit 1
+            fi
+            cp "$source" "$destination"
+            if [[ "${RUNNER_OS}" != "Windows" ]]; then
+              chmod 0755 "$destination"
+            fi
+          done
+
+      - name: Smoke native release binaries
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          EXE_SUFFIX: ${{ matrix.exe_suffix }}
+        run: |
+          set -euo pipefail
+          if [[ "$TARGET" == "$(rustc -vV | sed -n 's/^host: //p')" ]]; then
+            "dist/codex-${TARGET}${EXE_SUFFIX}" --version
+            "dist/codexflow-${TARGET}${EXE_SUFFIX}" --version
+            "dist/codexflow-supervisor-${TARGET}${EXE_SUFFIX}" --version
+          fi
+
+      - name: Upload native release assets
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codexflow-native-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Show sccache statistics
+        if: always()
+        shell: bash
+        run: sccache --show-stats || true
+
+  package-and-release:
+    needs:
+      - prepare
+      - build-native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      NPM_ASSET: ${{ needs.prepare.outputs.npm_asset }}
+      EDGE: ${{ needs.prepare.outputs.edge }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 22
+
+      - name: Download native release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: codexflow-native-*
+          merge-multiple: true
+          path: dist
+
+      - name: Build release-aware npm tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/codexflow-npm"
+          cp -R codexflow-npm "$stage"
+          node - "$stage/package.json" "$VERSION" "$TAG" <<'NODE'
+          const fs = require("node:fs");
+          const [file, version, tag] = process.argv.slice(2);
+          const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+          manifest.version = version;
+          manifest.codexflowReleaseTag = tag;
+          fs.writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
+          NODE
+          pushd "$stage" >/dev/null
+          pack_json="$(npm pack --json --pack-destination "$GITHUB_WORKSPACE/dist")"
+          packed="$(node -e 'const r=JSON.parse(process.argv[1]); process.stdout.write(r[0].filename)' "$pack_json")"
+          popd >/dev/null
+          mv "$GITHUB_WORKSPACE/dist/$packed" "$GITHUB_WORKSPACE/dist/$NPM_ASSET"
+
+      - name: Generate release checksums
+        shell: bash
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          : > checksums.txt
+          while IFS= read -r asset; do
+            sha256sum "$asset" >> checksums.txt
+          done < <(find . -maxdepth 1 -type f ! -name checksums.txt -printf '%f\n' | sort)
+          cat checksums.txt
+
+      - name: Validate complete release asset contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in \
+            x86_64-unknown-linux-gnu \
+            aarch64-unknown-linux-gnu \
+            aarch64-apple-darwin \
+            x86_64-apple-darwin; do
+            for binary in codex codexflow codexflow-supervisor codex-code-mode-host; do
+              test -f "dist/${binary}-${target}"
+            done
+          done
+          for target in x86_64-pc-windows-msvc aarch64-pc-windows-msvc; do
+            for binary in codex codexflow codexflow-supervisor codex-code-mode-host; do
+              test -f "dist/${binary}-${target}.exe"
+            done
+          done
+          test -f "dist/${NPM_ASSET}"
+          test -s dist/checksums.txt
+
+      - name: Create or update GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(dist/*)
+          if (( ${#assets[@]} == 0 )); then
+            echo "No release assets were produced" >&2
+            exit 1
+          fi
+
+          if [[ "$EDGE" == "true" ]]; then
+            gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+            gh release create "$TAG" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "CodexFlow Edge" \
+              --prerelease \
+              --notes "Precompiled CodexFlow edge runtime for commit $GITHUB_SHA. No local Rust toolchain is required for npm installation."
+          elif gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+            existing_sha="$(git rev-list -n1 "$TAG")"
+            if [[ "$existing_sha" != "$GITHUB_SHA" ]]; then
+              echo "Refusing to replace release $TAG from $existing_sha with assets built from $GITHUB_SHA" >&2
+              exit 1
+            fi
+            gh release upload "$TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "CodexFlow $VERSION" \
+              --generate-notes
+          fi
+
+      - name: Print npm installation command
+        shell: bash
+        run: |
+          echo "npm install -g https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${NPM_ASSET}"
+
+  release-install-smoke-unix:
+    needs:
+      - prepare
+      - package-and-release
+    name: Published install ${{ matrix.runtime }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            runtime: linux-x64
+          - runner: ubuntu-24.04-arm
+            runtime: linux-arm64
+          - runner: macos-15-intel
+            runtime: macos-x64
+          - runner: macos-15
+            runtime: macos-arm64
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 22
+
+      - name: Install published npm tarball with Rust execution poisoned
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          NPM_ASSET: ${{ needs.prepare.outputs.npm_asset }}
+        run: |
+          set -euo pipefail
+          trap_bin="$RUNNER_TEMP/no-rust-bin"
+          compiler_marker="$RUNNER_TEMP/compiler-invoked"
+          mkdir -p "$trap_bin"
+          for compiler in cargo rustc; do
+            cat > "$trap_bin/$compiler" <<'SH'
+          #!/bin/sh
+          printf compiler-invoked > "$RUNNER_TEMP/compiler-invoked"
+          exit 97
+          SH
+            chmod 0755 "$trap_bin/$compiler"
+          done
+          export PATH="$trap_bin:$PATH"
+
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${NPM_ASSET}"
+          prefix="$RUNNER_TEMP/npm-prefix"
+          npm install --global --prefix "$prefix" "$url"
+          "$prefix/bin/codexflow" --version
+          "$prefix/bin/codexflow-supervisor" --version
+          export CODEX_HOME="$RUNNER_TEMP/codex-home"
+          mkdir -p "$CODEX_HOME"
+          "$prefix/bin/codexflow" doctor --json > "$RUNNER_TEMP/doctor.json"
+          node - "$RUNNER_TEMP/doctor.json" <<'NODE'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          if (!report.codex) {
+            throw new Error("npm-installed codexflow cannot resolve its sibling codex binary");
+          }
+          if (!String(report.codex).includes("vendor")) {
+            throw new Error(`codexflow resolved unexpected codex binary: ${report.codex}`);
+          }
+          NODE
+          test ! -e "$compiler_marker"
+
+  release-install-smoke-windows:
+    needs:
+      - prepare
+      - package-and-release
+    name: Published install ${{ matrix.runtime }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            runtime: windows-x64
+          - runner: windows-11-arm
+            runtime: windows-arm64
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 22
+
+      - name: Install published npm tarball with Rust execution poisoned
+        shell: pwsh
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          NPM_ASSET: ${{ needs.prepare.outputs.npm_asset }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $trapBin = "$env:RUNNER_TEMP\no-rust-bin"
+          $compilerMarker = "$env:RUNNER_TEMP\compiler-invoked"
+          New-Item -ItemType Directory -Force -Path $trapBin | Out-Null
+          $trap = "@echo off`r`necho compiler-invoked>`"$compilerMarker`"`r`nexit /b 97`r`n"
+          Set-Content -NoNewline -Path "$trapBin\cargo.cmd" -Value $trap
+          Set-Content -NoNewline -Path "$trapBin\rustc.cmd" -Value $trap
+          $env:PATH = "$trapBin;$env:PATH"
+
+          $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG/$env:NPM_ASSET"
+          $prefix = "$env:RUNNER_TEMP\npm-prefix"
+          npm install --global --prefix $prefix $url
+          if ($LASTEXITCODE -ne 0) { throw "npm install from GitHub Release failed" }
+          & "$prefix\codexflow.cmd" --version
+          if ($LASTEXITCODE -ne 0) { throw "codexflow npm launcher failed" }
+          & "$prefix\codexflow-supervisor.cmd" --version
+          if ($LASTEXITCODE -ne 0) { throw "codexflow-supervisor npm launcher failed" }
+          $env:CODEX_HOME = "$env:RUNNER_TEMP\codex-home"
+          New-Item -ItemType Directory -Force -Path $env:CODEX_HOME | Out-Null
+          $doctor = (& "$prefix\codexflow.cmd" doctor --json | Out-String) | ConvertFrom-Json
+          if (-not $doctor.codex) { throw "npm-installed codexflow cannot resolve its sibling codex binary" }
+          if ([string]$doctor.codex -notmatch "vendor") { throw "codexflow resolved unexpected codex binary: $($doctor.codex)" }
+          if (Test-Path $compilerMarker) { throw "npm installation executed a local Rust compiler" }

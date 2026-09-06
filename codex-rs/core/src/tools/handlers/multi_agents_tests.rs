@@ -2915,6 +2915,70 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_wait_agent_until_event_does_not_timeout_or_repoll() {
+    let (session, mut turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config.multi_agent_v2.min_wait_timeout_ms = 1;
+    config.multi_agent_v2.max_wait_timeout_ms = 1_000;
+    config.multi_agent_v2.default_wait_timeout_ms = 1;
+    set_turn_config(&mut turn, config);
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let mut wait_task = tokio::spawn({
+        let session = session.clone();
+        let turn = turn.clone();
+        async move {
+            WaitAgentHandlerV2::default()
+                .handle(invocation(
+                    session,
+                    turn,
+                    "wait_agent",
+                    function_payload(json!({"until_event": true})),
+                ))
+                .await
+        }
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(/*millis*/ 50), &mut wait_task)
+            .await
+            .is_err(),
+        "event wait should remain pending instead of polling a timeout"
+    );
+
+    session
+        .input_queue
+        .enqueue_mailbox_communication(
+            InterAgentCommunication::new(
+                AgentPath::root(),
+                AgentPath::root(),
+                Vec::new(),
+                "hello from worker".to_string(),
+                /*trigger_turn*/ false,
+            ),
+            Default::default(),
+        )
+        .await;
+
+    let output = tokio::time::timeout(Duration::from_secs(/*secs*/ 1), wait_task)
+        .await
+        .expect("event wait should complete after mailbox activity")
+        .expect("wait task should join")
+        .expect("event wait should succeed after mailbox activity");
+    let (content, success) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(
+        result,
+        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
+            message: "Wait completed.".to_string(),
+            timed_out: false,
+        }
+    );
+    assert_eq!(success, None);
+}
+
+#[tokio::test]
 async fn multi_agent_v2_wait_agent_clamps_timeout_below_configured_min() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
@@ -3118,6 +3182,31 @@ async fn multi_agent_v2_wait_agent_rejects_timeout_above_configured_max() {
     assert_eq!(
         err,
         FunctionCallError::RespondToModel("timeout_ms must be at most 50".to_string())
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_wait_agent_rejects_timeout_with_until_event() {
+    let (session, turn) = make_session_and_context().await;
+    let Err(err) = WaitAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "wait_agent",
+            function_payload(json!({
+                "timeout_ms": 1,
+                "until_event": true
+            })),
+        ))
+        .await
+    else {
+        panic!("timeout and until_event should be mutually exclusive");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "timeout_ms cannot be combined with until_event=true".to_string()
+        )
     );
 }
 

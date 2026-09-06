@@ -1,0 +1,57 @@
+name: codexflow-autowake-remediation
+
+on:
+  push:
+    branches:
+      - codexflow/phase3c-event-runtime-master-map
+    paths:
+      - .github/workflows/codexflow-autowake-remediation.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codexflow-autowake-remediation
+  cancel-in-progress: false
+
+jobs:
+  integrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: codexflow/phase3c-event-runtime-master-map
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e
+        with:
+          toolchain: "1.98.1"
+          components: rustfmt
+
+      - name: Apply guarded auto-wake integration
+        run: python3 .github/scripts/codexflow_autowake_remediation.py
+
+      - name: Format and validate auto-wake integration
+        working-directory: codex-rs
+        run: |
+          set -euo pipefail
+          cargo +1.98.1 fmt --all
+          cargo +1.98.1 fmt --all -- --check
+          cargo +1.98.1 test -p codex-cli --bin codexflow
+          cargo +1.98.1 test -p codex-cli --bin codexflow-supervisor
+          cargo +1.98.1 check -p codex-cli --bin codexflow --bin codexflow-supervisor
+
+      - name: Commit integration and retire temporary files
+        run: |
+          set -euo pipefail
+          rm .github/workflows/codexflow-autowake-remediation.yml
+          rm .github/scripts/codexflow_autowake_remediation.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add codex-rs/cli/src/bin/codexflow/runtime.rs codex-rs/cli/src/bin/codexflow-supervisor.rs .github/workflows/codexflow-autowake-remediation.yml .github/scripts/codexflow_autowake_remediation.py
+          git commit -m "feat(runtime): resume blocked tasks from durable awaits"
+          git push origin HEAD:codexflow/phase3c-event-runtime-master-map

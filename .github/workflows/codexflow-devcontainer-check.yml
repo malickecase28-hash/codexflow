@@ -1,0 +1,45 @@
+name: codexflow-devcontainer-check
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "codexflow/phase2*"
+      - "codexflow/phase3*"
+    paths:
+      - ".devcontainer/**"
+      - ".github/workflows/codexflow-devcontainer-check.yml"
+  pull_request:
+    paths:
+      - ".devcontainer/**"
+      - ".github/workflows/codexflow-devcontainer-check.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codexflow-devcontainer-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  codespaces-smoke:
+    name: Codespaces Rust smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Build Codespaces image
+        run: docker build -f .devcontainer/Dockerfile -t codexflow-devcontainer .
+
+      - name: Bootstrap and compile CodexFlow in the container
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspaces/codexflow" \
+            -w /workspaces/codexflow \
+            -e CARGO_INCREMENTAL=0 \
+            -e CARGO_TARGET_DIR=/home/ubuntu/.cache/codexflow/cargo-target \
+            codexflow-devcontainer \
+            bash -lc 'git config --global --add safe.directory /workspaces/codexflow && bash .devcontainer/bootstrap-rust.sh --check'

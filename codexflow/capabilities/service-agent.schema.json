@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codexflow.local/schema/service-agent.json",
+  "title": "CodexFlow Service Agent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "enabled",
+    "project_id",
+    "role",
+    "protection",
+    "trigger",
+    "model",
+    "capabilities",
+    "permissions",
+    "budgets",
+    "notifications"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+    },
+    "enabled": { "type": "boolean" },
+    "project_id": { "type": "string", "minLength": 1 },
+    "role": { "type": "string", "minLength": 1 },
+    "protection": {
+      "type": "string",
+      "enum": ["user_managed"]
+    },
+    "trigger": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "events"],
+          "properties": {
+            "kind": { "const": "event" },
+            "events": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "schedule"],
+          "properties": {
+            "kind": { "const": "schedule" },
+            "schedule": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "manual" }
+          }
+        }
+      ]
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "model"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "reasoning_effort": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filesystem", "network", "delivery"],
+      "properties": {
+        "filesystem": {
+          "type": "string",
+          "enum": ["read-only", "workspace-write"]
+        },
+        "network": {
+          "type": "string",
+          "enum": ["none", "project-policy"]
+        },
+        "delivery": {
+          "type": "string",
+          "enum": ["report_only", "branch_only", "draft_pr_only"]
+        }
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_runs_per_day",
+        "max_attempts_per_fingerprint",
+        "max_tokens_per_run",
+        "cooldown_minutes"
+      ],
+      "properties": {
+        "max_runs_per_day": { "type": "integer", "minimum": 1 },
+        "max_attempts_per_fingerprint": { "type": "integer", "minimum": 1 },
+        "max_tokens_per_run": { "type": "integer", "minimum": 1 },
+        "max_wall_minutes": { "type": ["integer", "null"], "minimum": 1 },
+        "cooldown_minutes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "notifications": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["on_success", "on_failure", "on_blocked"],
+      "properties": {
+        "on_success": { "type": "boolean" },
+        "on_failure": { "type": "boolean" },
+        "on_blocked": { "type": "boolean" }
+      }
+    }
+  }
+}

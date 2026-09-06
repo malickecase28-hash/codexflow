@@ -1,0 +1,81 @@
+name: codexflow-package-check
+
+on:
+  push:
+    branches:
+      - codexflow/phase3c-event-runtime-master-map
+    paths:
+      - "codexflow-npm/**"
+      - ".github/workflows/codexflow-package-check.yml"
+      - ".github/workflows/codexflow-release.yml"
+  pull_request:
+    paths:
+      - "codexflow-npm/**"
+      - ".github/workflows/codexflow-package-check.yml"
+      - ".github/workflows/codexflow-release.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: codexflow-package-check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  package-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 22
+
+      - name: Check launcher and installer syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check codexflow-npm/bin/codexflow.js
+          node --check codexflow-npm/bin/codexflow-supervisor.js
+          node --check codexflow-npm/lib/platform.mjs
+          node --check codexflow-npm/lib/launch.mjs
+          node --check codexflow-npm/scripts/postinstall.mjs
+          node --check codexflow-npm/scripts/smoke.mjs
+
+      - name: Run npm launcher smoke tests
+        working-directory: codexflow-npm
+        run: npm test
+
+      - name: Exercise postinstall no-download path
+        working-directory: codexflow-npm
+        env:
+          CODEXFLOW_SKIP_DOWNLOAD: "1"
+        run: node scripts/postinstall.mjs
+
+      - name: Validate npm package contents
+        working-directory: codexflow-npm
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --dry-run --json > "$RUNNER_TEMP/codexflow-pack.json"
+          node - "$RUNNER_TEMP/codexflow-pack.json" <<'NODE'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          const files = new Set(report[0].files.map((entry) => entry.path));
+          for (const required of [
+            "bin/codexflow.js",
+            "bin/codexflow-supervisor.js",
+            "lib/launch.mjs",
+            "lib/platform.mjs",
+            "scripts/postinstall.mjs",
+          ]) {
+            if (!files.has(required)) {
+              throw new Error(`npm pack omitted ${required}`);
+            }
+          }
+          NODE

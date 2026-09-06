@@ -1,0 +1,804 @@
+use crate::types::PermissionOption;
+use crate::types::PermissionOutcome;
+use crate::types::PermissionRequest;
+use crate::types::RuntimeEvent;
+use crate::types::RuntimeEventSink;
+use crate::types::RuntimeInteractionHandler;
+use crate::types::RuntimeSessionId;
+use serde_json::Value;
+use serde_json::json;
+use std::path::Path;
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::Arc;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
+use tokio::process::Child;
+use tokio::process::ChildStdin;
+use tokio::process::ChildStdout;
+use tokio::process::Command;
+use tokio::sync::Mutex;
+use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::Semaphore;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
+
+#[derive(Debug, thiserror::Error)]
+pub enum CursorAcpError {
+    #[error("failed to launch Cursor ACP agent: {0}")]
+    Spawn(#[source] std::io::Error),
+    #[error("Cursor ACP child did not expose {0}")]
+    MissingPipe(&'static str),
+    #[error("Cursor ACP transport failed: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Cursor ACP emitted invalid JSON: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("Cursor ACP closed stdout before request {0} completed")]
+    UnexpectedEof(String),
+    #[error("Cursor ACP request {method} failed: {error}")]
+    Rpc { method: String, error: Value },
+    #[error("Cursor ACP response to {0} omitted the required field '{1}'")]
+    MissingField(String, &'static str),
+    #[error("Cursor ACP connection is unavailable; reconnect the backend")]
+    ConnectionUnavailable,
+    #[error("Cursor ACP control operation failed: {0}")]
+    Control(String),
+    #[error("Cursor ACP session did not expose a model selector for requested model '{0}'")]
+    ModelConfigUnavailable(String),
+    #[error("Cursor ACP model '{0}' is not available in this session")]
+    ModelUnavailable(String),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CursorAcpConfig {
+    /// Explicit ACP executable. If omitted, CODEX_CURSOR_AGENT is honored,
+    /// then `agent`, then legacy `cursor-agent` are attempted.
+    pub executable: Option<PathBuf>,
+    /// Optional launcher arguments inserted before the required `acp` subcommand.
+    /// This supports stable wrappers/interpreters without changing the official
+    /// `agent acp` default invocation.
+    pub launcher_args: Vec<String>,
+    pub process_cwd: Option<PathBuf>,
+}
+
+pub struct CursorAcpBackend {
+    config: CursorAcpConfig,
+    connection: Mutex<Option<AcpConnection>>,
+    control_tx: Mutex<mpsc::UnboundedSender<AcpControl>>,
+    serial: Arc<Semaphore>,
+}
+
+struct AcpConnection {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    next_id: u64,
+    control_rx: mpsc::UnboundedReceiver<AcpControl>,
+}
+
+enum AcpControl {
+    Cancel {
+        session_id: RuntimeSessionId,
+        ack: oneshot::Sender<Result<(), String>>,
+    },
+    Shutdown {
+        ack: oneshot::Sender<Result<(), String>>,
+    },
+}
+
+impl CursorAcpBackend {
+    pub async fn connect(config: CursorAcpConfig) -> Result<Self, CursorAcpError> {
+        let (mut connection, control_tx) = AcpConnection::spawn(config.clone()).await?;
+        connection.initialize().await?;
+        connection.authenticate().await?;
+        Ok(Self {
+            config,
+            connection: Mutex::new(Some(connection)),
+            control_tx: Mutex::new(control_tx),
+            serial: Arc::new(Semaphore::new(1)),
+        })
+    }
+
+    /// Recreate the ACP child after a transport failure without replacing the
+    /// backend object held by the runtime router.
+    pub async fn reconnect(&self) -> Result<(), CursorAcpError> {
+        let _permit = self.acquire_serial().await?;
+        let (mut connection, control_tx) = AcpConnection::spawn(self.config.clone()).await?;
+        connection.initialize().await?;
+        connection.authenticate().await?;
+        *self.control_tx.lock().await = control_tx;
+        let mut slot = self.connection.lock().await;
+        *slot = Some(connection);
+        Ok(())
+    }
+
+    pub async fn new_session(&self, cwd: &Path) -> Result<RuntimeSessionId, CursorAcpError> {
+        self.new_session_inner(cwd, None).await
+    }
+
+    pub async fn new_session_with_model(
+        &self,
+        cwd: &Path,
+        model: &str,
+    ) -> Result<RuntimeSessionId, CursorAcpError> {
+        self.new_session_inner(cwd, Some(model)).await
+    }
+
+    async fn new_session_inner(
+        &self,
+        cwd: &Path,
+        model: Option<&str>,
+    ) -> Result<RuntimeSessionId, CursorAcpError> {
+        let (_permit, mut connection) = self.take_connection().await?;
+        let result = connection
+            .request(
+                "session/new",
+                json!({ "cwd": cwd, "mcpServers": [] }),
+                None,
+                None,
+            )
+            .await;
+        let result = match result {
+            Ok(result) => {
+                let session_id = session_id_from_result("session/new", result.clone())?;
+                if let Some(model) = model {
+                    connection
+                        .apply_session_model(&session_id, &result, model)
+                        .await?;
+                }
+                Ok((session_id, result))
+            }
+            Err(error) => Err(error),
+        };
+        let (session_id, _result) = self.complete_operation(connection, result).await?;
+        Ok(session_id)
+    }
+
+    pub async fn load_session(
+        &self,
+        session_id: &RuntimeSessionId,
+        cwd: &Path,
+        sink: Arc<dyn RuntimeEventSink>,
+    ) -> Result<(), CursorAcpError> {
+        self.load_session_inner(session_id, cwd, None, sink).await
+    }
+
+    pub async fn load_session_with_model(
+        &self,
+        session_id: &RuntimeSessionId,
+        cwd: &Path,
+        model: &str,
+        sink: Arc<dyn RuntimeEventSink>,
+    ) -> Result<(), CursorAcpError> {
+        self.load_session_inner(session_id, cwd, Some(model), sink)
+            .await
+    }
+
+    async fn load_session_inner(
+        &self,
+        session_id: &RuntimeSessionId,
+        cwd: &Path,
+        model: Option<&str>,
+        sink: Arc<dyn RuntimeEventSink>,
+    ) -> Result<(), CursorAcpError> {
+        let (_permit, mut connection) = self.take_connection().await?;
+        let result = connection
+            .request(
+                "session/load",
+                json!({ "sessionId": session_id.0, "cwd": cwd, "mcpServers": [] }),
+                Some(sink),
+                None,
+            )
+            .await;
+        let result = match result {
+            Ok(result) => {
+                if let Some(model) = model {
+                    connection
+                        .apply_session_model(session_id, &result, model)
+                        .await?;
+                }
+                Ok(result)
+            }
+            Err(error) => Err(error),
+        };
+        self.complete_operation(connection, result).await?;
+        Ok(())
+    }
+
+    pub async fn prompt(
+        &self,
+        session_id: &RuntimeSessionId,
+        text: &str,
+        sink: Arc<dyn RuntimeEventSink>,
+        interactions: Arc<dyn RuntimeInteractionHandler>,
+    ) -> Result<Option<String>, CursorAcpError> {
+        let (_permit, mut connection) = self.take_connection().await?;
+        let result = connection
+            .request(
+                "session/prompt",
+                json!({
+                    "sessionId": session_id.0,
+                    "prompt": [{ "type": "text", "text": text }]
+                }),
+                Some(Arc::clone(&sink)),
+                Some(interactions),
+            )
+            .await;
+        let result = self.complete_operation(connection, result).await?;
+        let stop_reason = result
+            .get("stopReason")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        sink.emit(RuntimeEvent::Completed {
+            stop_reason: stop_reason.clone(),
+        });
+        Ok(stop_reason)
+    }
+
+    /// ACP defines cancellation as a client notification, not a request.
+    ///
+    /// Cancellation must bypass the normal single-request semaphore. An active
+    /// prompt owns that permit and the connection, so queuing cancel behind it
+    /// would deadlock Ctrl+C until the turn had already completed. Idle
+    /// connections are notified directly; busy connections receive an
+    /// out-of-band control message consumed by the active JSON-RPC read loop.
+    pub async fn cancel(&self, session_id: &RuntimeSessionId) -> Result<(), CursorAcpError> {
+        if let Ok(permit) = Arc::clone(&self.serial).try_acquire_owned() {
+            let connection = {
+                let mut slot = self.connection.lock().await;
+                slot.take()
+            };
+            if let Some(mut connection) = connection {
+                let result = connection
+                    .notify("session/cancel", json!({ "sessionId": session_id.0 }))
+                    .await;
+                let result = self.complete_operation(connection, result).await;
+                drop(permit);
+                return result;
+            }
+            drop(permit);
+        }
+
+        let (ack_tx, ack_rx) = oneshot::channel();
+        let control = AcpControl::Cancel {
+            session_id: session_id.clone(),
+            ack: ack_tx,
+        };
+        self.control_tx
+            .lock()
+            .await
+            .send(control)
+            .map_err(|_| CursorAcpError::ConnectionUnavailable)?;
+        ack_rx
+            .await
+            .map_err(|_| CursorAcpError::ConnectionUnavailable)?
+            .map_err(CursorAcpError::Control)
+    }
+
+    /// Terminate the child even when a request is currently blocked on ACP
+    /// stdout. This is required for deterministic account switching and process
+    /// shutdown after a wedged provider turn.
+    pub async fn shutdown(&self) -> Result<(), CursorAcpError> {
+        if let Ok(permit) = Arc::clone(&self.serial).try_acquire_owned() {
+            let connection = {
+                let mut slot = self.connection.lock().await;
+                slot.take()
+            };
+            if let Some(mut connection) = connection {
+                let result = connection.terminate().await;
+                drop(permit);
+                return result;
+            }
+            drop(permit);
+            return Ok(());
+        }
+
+        let (ack_tx, ack_rx) = oneshot::channel();
+        self.control_tx
+            .lock()
+            .await
+            .send(AcpControl::Shutdown { ack: ack_tx })
+            .map_err(|_| CursorAcpError::ConnectionUnavailable)?;
+        ack_rx
+            .await
+            .map_err(|_| CursorAcpError::ConnectionUnavailable)?
+            .map_err(CursorAcpError::Control)
+    }
+
+    async fn acquire_serial(&self) -> Result<OwnedSemaphorePermit, CursorAcpError> {
+        Arc::clone(&self.serial)
+            .acquire_owned()
+            .await
+            .map_err(|_| CursorAcpError::ConnectionUnavailable)
+    }
+
+    async fn take_connection(
+        &self,
+    ) -> Result<(OwnedSemaphorePermit, AcpConnection), CursorAcpError> {
+        let permit = self.acquire_serial().await?;
+        let mut slot = self.connection.lock().await;
+        let connection = slot.take().ok_or(CursorAcpError::ConnectionUnavailable)?;
+        drop(slot);
+        Ok((permit, connection))
+    }
+
+    async fn complete_operation<T>(
+        &self,
+        mut connection: AcpConnection,
+        result: Result<T, CursorAcpError>,
+    ) -> Result<T, CursorAcpError> {
+        let fatal = matches!(
+            &result,
+            Err(CursorAcpError::Io(_)
+                | CursorAcpError::Json(_)
+                | CursorAcpError::UnexpectedEof(_)
+                | CursorAcpError::ConnectionUnavailable)
+        );
+        if fatal {
+            let _ = connection.terminate().await;
+        } else {
+            let mut slot = self.connection.lock().await;
+            *slot = Some(connection);
+        }
+        result
+    }
+}
+
+impl AcpConnection {
+    async fn spawn(
+        config: CursorAcpConfig,
+    ) -> Result<(Self, mpsc::UnboundedSender<AcpControl>), CursorAcpError> {
+        let candidates: Vec<PathBuf> = if let Some(executable) = config.executable {
+            vec![executable]
+        } else if let Some(executable) = std::env::var_os("CODEX_CURSOR_AGENT") {
+            vec![PathBuf::from(executable)]
+        } else {
+            vec![PathBuf::from("agent"), PathBuf::from("cursor-agent")]
+        };
+
+        let mut last_not_found = None;
+        for executable in candidates {
+            let mut command = Command::new(&executable);
+            command.args(&config.launcher_args);
+            command.arg("acp");
+            if let Some(cwd) = config.process_cwd.as_deref() {
+                command.current_dir(cwd);
+            }
+            command.stdin(Stdio::piped());
+            command.stdout(Stdio::piped());
+            command.stderr(Stdio::inherit());
+            command.kill_on_drop(true);
+            match command.spawn() {
+                Ok(mut child) => {
+                    let stdin = child
+                        .stdin
+                        .take()
+                        .ok_or(CursorAcpError::MissingPipe("stdin"))?;
+                    let stdout = child
+                        .stdout
+                        .take()
+                        .ok_or(CursorAcpError::MissingPipe("stdout"))?;
+                    let (control_tx, control_rx) = mpsc::unbounded_channel();
+                    return Ok((
+                        Self {
+                            child,
+                            stdin,
+                            stdout: BufReader::new(stdout),
+                            next_id: 1,
+                            control_rx,
+                        },
+                        control_tx,
+                    ));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    last_not_found = Some(error);
+                }
+                Err(error) => return Err(CursorAcpError::Spawn(error)),
+            }
+        }
+
+        Err(CursorAcpError::Spawn(last_not_found.unwrap_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no Cursor agent executable found",
+            )
+        })))
+    }
+
+    async fn initialize(&mut self) -> Result<(), CursorAcpError> {
+        self.request(
+            "initialize",
+            json!({
+                "protocolVersion": 1,
+                "clientCapabilities": {
+                    "fs": { "readTextFile": false, "writeTextFile": false },
+                    "terminal": false
+                },
+                "clientInfo": { "name": "codexflow", "version": env!("CARGO_PKG_VERSION") }
+            }),
+            None,
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn authenticate(&mut self) -> Result<(), CursorAcpError> {
+        self.request(
+            "authenticate",
+            json!({ "methodId": "cursor_login" }),
+            None,
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn apply_session_model(
+        &mut self,
+        session_id: &RuntimeSessionId,
+        session_result: &Value,
+        model: &str,
+    ) -> Result<(), CursorAcpError> {
+        let config = find_model_config(session_result, model)
+            .ok_or_else(|| CursorAcpError::ModelConfigUnavailable(model.to_string()))?;
+        if !config_option_contains_value(config, model) {
+            return Err(CursorAcpError::ModelUnavailable(model.to_string()));
+        }
+        if config.get("currentValue").and_then(Value::as_str) == Some(model) {
+            return Ok(());
+        }
+        let config_id = config
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CursorAcpError::ModelConfigUnavailable(model.to_string()))?;
+        self.request(
+            "session/set_config_option",
+            json!({
+                "sessionId": session_id.0,
+                "configId": config_id,
+                "value": model
+            }),
+            None,
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn notify(&mut self, method: &str, params: Value) -> Result<(), CursorAcpError> {
+        self.write_message(&json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params
+        }))
+        .await
+    }
+
+    async fn terminate(&mut self) -> Result<(), CursorAcpError> {
+        let _ = self.stdin.shutdown().await;
+        if self.child.try_wait()?.is_none() {
+            self.child.kill().await?;
+        }
+        Ok(())
+    }
+
+    async fn request(
+        &mut self,
+        method: &str,
+        params: Value,
+        sink: Option<Arc<dyn RuntimeEventSink>>,
+        interactions: Option<Arc<dyn RuntimeInteractionHandler>>,
+    ) -> Result<Value, CursorAcpError> {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.write_message(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params
+        }))
+        .await?;
+
+        loop {
+            let mut line = String::new();
+            tokio::select! {
+                read = self.stdout.read_line(&mut line) => {
+                    if read? == 0 {
+                        return Err(CursorAcpError::UnexpectedEof(method.to_string()));
+                    }
+                }
+                control = self.control_rx.recv() => {
+                    match control {
+                        Some(AcpControl::Cancel { session_id, ack }) => {
+                            let result = self
+                                .notify(
+                                    "session/cancel",
+                                    json!({ "sessionId": session_id.0 }),
+                                )
+                                .await;
+                            let ack_result = result
+                                .as_ref()
+                                .map(|_| ())
+                                .map_err(ToString::to_string);
+                            let _ = ack.send(ack_result);
+                            result?;
+                            continue;
+                        }
+                        Some(AcpControl::Shutdown { ack }) => {
+                            let result = self.terminate().await;
+                            let ack_result = result
+                                .as_ref()
+                                .map(|_| ())
+                                .map_err(ToString::to_string);
+                            let _ = ack.send(ack_result);
+                            result?;
+                            return Err(CursorAcpError::ConnectionUnavailable);
+                        }
+                        None => {}
+                    }
+                }
+            }
+
+            let message: Value = serde_json::from_str(line.trim_end())?;
+
+            if message.get("id") == Some(&Value::from(id))
+                && (message.get("result").is_some() || message.get("error").is_some())
+            {
+                if let Some(error) = message.get("error") {
+                    return Err(CursorAcpError::Rpc {
+                        method: method.to_string(),
+                        error: error.clone(),
+                    });
+                }
+                return Ok(message.get("result").cloned().unwrap_or(Value::Null));
+            }
+
+            self.handle_server_message(message, sink.as_deref(), interactions.as_deref())
+                .await?;
+        }
+    }
+
+    async fn handle_server_message(
+        &mut self,
+        message: Value,
+        sink: Option<&dyn RuntimeEventSink>,
+        interactions: Option<&dyn RuntimeInteractionHandler>,
+    ) -> Result<(), CursorAcpError> {
+        let Some(method) = message.get("method").and_then(Value::as_str) else {
+            return Ok(());
+        };
+        let params = message.get("params").cloned().unwrap_or(Value::Null);
+
+        match method {
+            "session/update" => {
+                if let Some(sink) = sink {
+                    sink.emit(normalize_session_update(&params));
+                }
+            }
+            "session/request_permission" => {
+                let Some(request_id) = message.get("id").cloned() else {
+                    return Ok(());
+                };
+                let request = parse_permission_request(request_id.clone(), params.clone());
+                if let Some(sink) = sink {
+                    sink.emit(RuntimeEvent::PermissionRequest {
+                        request: request.clone(),
+                    });
+                }
+                let outcome = match interactions {
+                    Some(handler) => handler.decide_permission(&request).await,
+                    None => PermissionOutcome::RejectOnce,
+                };
+                self.write_message(&json!({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "outcome": {
+                            "outcome": "selected",
+                            "optionId": outcome.option_id()
+                        }
+                    }
+                }))
+                .await?;
+            }
+            "cursor/ask_question" | "cursor/create_plan" => {
+                if let Some(sink) = sink {
+                    sink.emit(RuntimeEvent::CursorExtension {
+                        method: method.to_string(),
+                        params: params.clone(),
+                    });
+                }
+                if let Some(request_id) = message.get("id").cloned() {
+                    let result = match interactions {
+                        Some(handler) => handler.handle_cursor_extension(method, &params).await,
+                        None => None,
+                    };
+                    if let Some(result) = result {
+                        self.write_message(&json!({
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "result": result
+                        }))
+                        .await?;
+                    } else {
+                        self.write_message(&json!({
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "error": {
+                                "code": -32601,
+                                "message": "Cursor extension is not handled by this client"
+                            }
+                        }))
+                        .await?;
+                    }
+                }
+            }
+            method if method.starts_with("cursor/") => {
+                if let Some(sink) = sink {
+                    sink.emit(RuntimeEvent::CursorExtension {
+                        method: method.to_string(),
+                        params,
+                    });
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn write_message(&mut self, message: &Value) -> Result<(), CursorAcpError> {
+        let mut encoded = serde_json::to_vec(message)?;
+        encoded.push(b'\n');
+        self.stdin.write_all(&encoded).await?;
+        self.stdin.flush().await?;
+        Ok(())
+    }
+}
+
+fn session_id_from_result(method: &str, result: Value) -> Result<RuntimeSessionId, CursorAcpError> {
+    result
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .map(|id| RuntimeSessionId(id.to_string()))
+        .ok_or_else(|| CursorAcpError::MissingField(method.to_string(), "sessionId"))
+}
+
+fn find_model_config<'a>(session_result: &'a Value, model: &str) -> Option<&'a Value> {
+    let configs = session_result.get("configOptions")?.as_array()?;
+    configs
+        .iter()
+        .find(|config| config.get("category").and_then(Value::as_str) == Some("model"))
+        .or_else(|| {
+            configs.iter().find(|config| {
+                config.get("id").and_then(Value::as_str).is_some_and(|id| {
+                    matches!(id.to_ascii_lowercase().as_str(), "model" | "models")
+                }) || config
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name.eq_ignore_ascii_case("model"))
+            })
+        })
+        .or_else(|| {
+            let mut matching = configs
+                .iter()
+                .filter(|config| config_option_contains_value(config, model));
+            let first = matching.next()?;
+            matching.next().is_none().then_some(first)
+        })
+}
+
+fn config_option_contains_value(config: &Value, target: &str) -> bool {
+    match config {
+        Value::Array(values) => values
+            .iter()
+            .any(|value| config_option_contains_value(value, target)),
+        Value::Object(map) => {
+            map.get("value").and_then(Value::as_str) == Some(target)
+                || map
+                    .values()
+                    .any(|value| config_option_contains_value(value, target))
+        }
+        _ => false,
+    }
+}
+
+pub fn normalize_session_update(params: &Value) -> RuntimeEvent {
+    let update = params.get("update").cloned().unwrap_or(Value::Null);
+    let update_type = update
+        .get("sessionUpdate")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    match update_type {
+        "agent_message_chunk" => RuntimeEvent::AgentMessageChunk {
+            text: update
+                .get("content")
+                .and_then(|content| content.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        },
+        "tool_call" => RuntimeEvent::ToolCall { raw: update },
+        "tool_call_update" => RuntimeEvent::ToolCallUpdate { raw: update },
+        "plan" => RuntimeEvent::Plan { raw: update },
+        "usage_update" => RuntimeEvent::UsageUpdate { raw: update },
+        _ => RuntimeEvent::SessionUpdate {
+            update_type: update_type.to_string(),
+            raw: update,
+        },
+    }
+}
+
+pub fn parse_permission_request(request_id: Value, params: Value) -> PermissionRequest {
+    let options = params
+        .get("options")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|option| {
+            let option_id = option.get("optionId")?.as_str()?.to_string();
+            Some(PermissionOption {
+                option_id,
+                name: option
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                kind: option
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            })
+        })
+        .collect();
+    PermissionRequest {
+        request_id,
+        session_id: params
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        tool_call: params.get("toolCall").cloned(),
+        options,
+        raw_params: params,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_agent_message_chunk() {
+        let event = normalize_session_update(&json!({
+            "sessionId": "s1",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": "hello" }
+            }
+        }));
+        assert_eq!(
+            event,
+            RuntimeEvent::AgentMessageChunk {
+                text: "hello".into()
+            }
+        );
+    }
+
+    #[test]
+    fn permission_parser_preserves_explicit_option_ids() {
+        let request = parse_permission_request(
+            Value::from(7),
+            json!({
+                "sessionId": "s1",
+                "options": [
+                    { "optionId": "allow-once", "name": "Allow once" },
+                    { "optionId": "reject-once", "name": "Reject" }
+                ],
+                "toolCall": { "toolCallId": "tool-1" }
+            }),
+        );
+        assert_eq!(request.options.len(), 2);
+        assert_eq!(request.options[0].option_id, "allow-once");
+        assert_eq!(request.session_id.as_deref(), Some("s1"));
+    }
+}

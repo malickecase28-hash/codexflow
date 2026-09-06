@@ -280,7 +280,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
 pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Wait for a mailbox update from any live agent, including queued messages and final-status notifications. The wait also ends early when new user input is steered into the active turn. Does not return the content; returns either a summary of which agents have updates (if any), an interruption summary for steered input, or a timeout summary if no activity arrives before the deadline."
+        description: "Wait for a mailbox update from any live agent, including queued messages and final-status notifications. The wait also ends early when new user input is steered into the active turn. Does not return the content; returns either a summary of which agents have updates (if any), an interruption summary for steered input, or a timeout summary if no activity arrives before the deadline. Set until_event=true to wait without a timeout."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -856,13 +856,22 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
 }
 
 fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema {
-    let properties = BTreeMap::from([(
-        "timeout_ms".to_string(),
-        JsonSchema::number(Some(format!(
-            "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
-            options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
-        ))),
-    )]);
+    let properties = BTreeMap::from([
+        (
+            "timeout_ms".to_string(),
+            JsonSchema::number(Some(format!(
+                "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
+                options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
+            ))),
+        ),
+        (
+            "until_event".to_string(),
+            JsonSchema::boolean(Some(
+                "Wait until activity arrives instead of using a timeout. Omit or set false for bounded waiting; do not provide timeout_ms when true."
+                    .to_string(),
+            )),
+        ),
+    ]);
 
     JsonSchema::object(properties, /*required*/ None, Some(false.into()))
 }

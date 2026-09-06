@@ -1,0 +1,85 @@
+name: codexflow-prebuilt-windows
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
+        with:
+          toolchain: "1.95.0"
+          targets: x86_64-pc-windows-msvc
+
+      - uses: ./.github/actions/setup-msvc-env
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - name: Build CodexFlow runtime bundle
+        shell: pwsh
+        run: |
+          $env:LIBSQLITE3_FLAGS = "SQLITE_DISABLE_INTRINSIC"
+          cargo build --locked --target x86_64-pc-windows-msvc --release --timings -p codex-cli --bin codex --bin codexflow --bin codexflow-supervisor
+          cargo build --locked --target x86_64-pc-windows-msvc --release --timings -p codex-code-mode-host --bin codex-code-mode-host
+
+      - name: Stage archive
+        shell: pwsh
+        run: |
+          $release = Join-Path $env:CARGO_TARGET_DIR "x86_64-pc-windows-msvc\release"
+          $stage = Join-Path $env:RUNNER_TEMP "codexflow-windows-x86_64"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          $required = @(
+            "codex.exe",
+            "codexflow.exe",
+            "codex-code-mode-host.exe",
+            "codexflow-supervisor.exe"
+          )
+          foreach ($name in $required) {
+            $source = Join-Path $release $name
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+              throw "Incomplete CodexFlow build: missing $name"
+            }
+            Copy-Item $source $stage
+          }
+
+          & (Join-Path $stage "codex.exe") --version
+          if ($LASTEXITCODE -ne 0) { throw "codex.exe smoke test failed" }
+          & (Join-Path $stage "codexflow.exe") --version
+          if ($LASTEXITCODE -ne 0) { throw "codexflow.exe smoke test failed" }
+          & (Join-Path $stage "codexflow-supervisor.exe") --version
+          if ($LASTEXITCODE -ne 0) { throw "codexflow-supervisor.exe smoke test failed" }
+
+          $archive = Join-Path $env:RUNNER_TEMP "codexflow-windows-x86_64.zip"
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $archive -Force
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  codexflow-windows-x86_64.zip" | Set-Content -Encoding ASCII "$archive.sha256"
+
+      - name: Upload Cargo timings
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: codexflow-cargo-timings-windows-x64
+          path: ${{ env.CARGO_TARGET_DIR }}/**/cargo-timings/cargo-timing.html
+          if-no-files-found: warn
+
+      - name: Upload prebuilt bundle
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: codexflow-windows-x86_64
+          path: |
+            ${{ runner.temp }}/codexflow-windows-x86_64.zip
+            ${{ runner.temp }}/codexflow-windows-x86_64.zip.sha256

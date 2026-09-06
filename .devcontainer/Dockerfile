@@ -1,27 +1,35 @@
 FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
-# enable 'universe' because musl-tools & clang live there
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    software-properties-common && \
-    add-apt-repository --yes universe
 
-# now install build deps
 RUN apt-get update && \
+    apt-get install -y --no-install-recommends software-properties-common && \
+    add-apt-repository --yes universe && \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
-    build-essential curl git ca-certificates \
-    pkg-config libcap-dev clang musl-tools libssl-dev just && \
+      build-essential \
+      ca-certificates \
+      clang \
+      curl \
+      git \
+      libcap-dev \
+      libssl-dev \
+      pkg-config \
+      python3 \
+      xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
-# Ubuntu 24.04 ships with user 'ubuntu' already created with UID 1000.
 USER ubuntu
 
-# install Rust + musl target as dev user
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal && \
-    ~/.cargo/bin/rustup target add aarch64-unknown-linux-musl && \
-    ~/.cargo/bin/rustup component add clippy rustfmt
+    /home/ubuntu/.cargo/bin/rustup toolchain install 1.98.1 \
+      --profile minimal \
+      --component clippy \
+      --component rustfmt \
+      --component rust-src && \
+    /home/ubuntu/.cargo/bin/rustup default 1.98.1
 
 ENV PATH="/home/ubuntu/.cargo/bin:${PATH}"
+ENV RUST_BACKTRACE=1
 
-WORKDIR /workspace
+WORKDIR /workspaces

@@ -1,0 +1,15 @@
+{
+  "schema": "codexflow.vendored-skills.v1",
+  "source": "https://github.com/mattpocock/skills",
+  "commit": "3cca18b368ae95cdbdebbff572ccafa662551015",
+  "license": "MIT",
+  "installed_at": "2026-09-04",
+  "selection": [
+    "engineering/codebase-design",
+    "engineering/tdd",
+    "engineering/diagnosing-bugs",
+    "engineering/code-review",
+    "engineering/implement"
+  ],
+  "policy": "Pinned project-local engineering skills. CodexFlow discovers compact skill metadata deterministically and leaves full instructions lazy until selected by task evidence or explicit invocation."
+}
