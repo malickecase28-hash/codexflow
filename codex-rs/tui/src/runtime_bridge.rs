@@ -4,11 +4,15 @@ use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ReloadAccountAuthResponse;
 use codex_app_server_protocol::RequestId;
 use codex_runtime_harness::CursorAcpConfig;
+use codex_runtime_harness::ModelCatalog;
+use codex_runtime_harness::ModelDescriptor;
 use codex_runtime_harness::NativeOpenAiAuthReloader;
 use codex_runtime_harness::NativeOpenAiReloadError;
 use codex_runtime_harness::ProviderId;
+use codex_runtime_harness::ProviderQuotaSnapshot;
 use codex_runtime_harness::RuntimeHarness;
 use codex_runtime_harness::RuntimeModelId;
+use codex_runtime_harness::RuntimeSelection;
 use color_eyre::eyre::Result;
 use std::future::Future;
 use std::pin::Pin;
@@ -16,6 +20,14 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 const RUNTIME_SELECTION_FILE: &str = "runtime-harness-selection.json";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeAccountSummary {
+    pub(crate) provider: ProviderId,
+    pub(crate) id: String,
+    pub(crate) label: String,
+    pub(crate) active: bool,
+}
 
 /// Reloads the exact app-server-owned authentication manager used by native
 /// OpenAI turns. The request contains no credential material; it only asks the
@@ -92,6 +104,93 @@ impl RuntimeBridge {
         Ok(Self {
             harness: Arc::new(harness),
         })
+    }
+
+    pub(crate) async fn selection(&self) -> RuntimeSelection {
+        self.harness.selection().await
+    }
+
+    pub(crate) async fn catalog(&self) -> ModelCatalog {
+        self.harness.catalog().await
+    }
+
+    pub(crate) async fn refresh_cursor_models(&self) -> Result<Vec<ModelDescriptor>> {
+        Ok(self.harness.refresh_cursor_models().await?)
+    }
+
+    pub(crate) async fn select_model(&self, model: RuntimeModelId) -> Result<RuntimeSelection> {
+        Ok(self.harness.select_model(model).await?)
+    }
+
+    pub(crate) async fn select_provider(
+        &self,
+        model: RuntimeModelId,
+    ) -> Result<RuntimeSelection> {
+        Ok(self.harness.select_provider(model).await?)
+    }
+
+    pub(crate) async fn list_accounts(
+        &self,
+        provider: ProviderId,
+    ) -> Result<Vec<RuntimeAccountSummary>> {
+        Ok(self
+            .harness
+            .broker()
+            .list_accounts(provider)
+            .await?
+            .into_iter()
+            .map(|account| RuntimeAccountSummary {
+                provider,
+                id: account.id.0,
+                label: account.label,
+                active: account.active,
+            })
+            .collect())
+    }
+
+    pub(crate) async fn use_account(
+        &self,
+        provider: ProviderId,
+        account_id: impl Into<String>,
+    ) -> Result<RuntimeSelection> {
+        self.harness
+            .activate_account(provider, account_id.into())
+            .await?;
+        Ok(self.harness.selection().await)
+    }
+
+    pub(crate) async fn remove_account(
+        &self,
+        provider: ProviderId,
+        account_id: impl Into<String>,
+    ) -> Result<u64> {
+        Ok(self
+            .harness
+            .remove_account(provider, account_id.into())
+            .await?)
+    }
+
+    pub(crate) async fn quota_snapshot(
+        &self,
+        provider: ProviderId,
+    ) -> Result<ProviderQuotaSnapshot> {
+        Ok(self.harness.quota_snapshot(provider).await?)
+    }
+
+    pub(crate) async fn login_cursor(&self, label_hint: Option<String>) -> Result<RuntimeSelection> {
+        self.harness.login_cursor(label_hint).await?;
+        Ok(self.harness.selection().await)
+    }
+
+    pub(crate) async fn import_after_native_login(
+        &self,
+        provider: ProviderId,
+        label_hint: Option<String>,
+    ) -> Result<RuntimeSelection> {
+        self.harness
+            .import_after_native_login(provider, label_hint)
+            .await?;
+        Ok(self.harness.selection().await)
     }
 
     /// Deterministically terminate any provider-owned child before app-server exits.
