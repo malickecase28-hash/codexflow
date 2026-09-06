@@ -1,4 +1,5 @@
 use super::*;
+use codex_app_server_protocol::AccountLoginCompletedNotification;
 use codex_runtime_harness::ProviderId;
 use codex_runtime_harness::RuntimeAutoSwapDecision;
 use codex_runtime_harness::RuntimeModelId;
@@ -28,6 +29,47 @@ impl App {
         if let Err(error) = result {
             self.chat_widget.add_error_message(error.to_string());
         }
+    }
+
+    pub(super) async fn handle_runtime_openai_login_completed(
+        &mut self,
+        notification: &AccountLoginCompletedNotification,
+    ) -> bool {
+        let Some(login_id) = notification.login_id.as_deref() else {
+            return false;
+        };
+        if self.pending_runtime_openai_login.as_deref() != Some(login_id) {
+            return false;
+        }
+        self.pending_runtime_openai_login = None;
+
+        if !notification.success {
+            self.chat_widget.add_error_message(
+                notification
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "ChatGPT login failed.".to_string()),
+            );
+            return true;
+        }
+
+        match self.runtime_bridge.import_completed_openai_login().await {
+            Ok(selection) => {
+                self.chat_widget.add_info_message(
+                    format!(
+                        "OpenAI account added through Codex login. Active runtime: {}",
+                        selection.model.qualified()
+                    ),
+                    Some("Use /account list openai to inspect saved accounts.".to_string()),
+                );
+            }
+            Err(error) => {
+                self.chat_widget.add_error_message(format!(
+                    "ChatGPT login succeeded, but importing the account into the runtime harness failed: {error}"
+                ));
+            }
+        }
+        true
     }
 
     async fn runtime_provider_command(&mut self, args: &str) -> color_eyre::Result<()> {
@@ -244,9 +286,27 @@ impl App {
                         );
                     }
                     ProviderId::OpenAi => {
-                        return Err(color_eyre::eyre::eyre!(
-                            "OpenAI account add must use Codex's official ChatGPT login flow; runtime command integration for that UI is not wired yet"
-                        ));
+                        if let Some(login_id) = self.pending_runtime_openai_login.take()
+                            && let Err(error) =
+                                self.runtime_bridge.cancel_openai_login(login_id).await
+                        {
+                            tracing::warn!(
+                                error = %error,
+                                "failed to cancel superseded runtime OpenAI login"
+                            );
+                        }
+                        let login = self.runtime_bridge.start_openai_login().await?;
+                        self.pending_runtime_openai_login = Some(login.login_id);
+                        self.chat_widget.add_info_message(
+                            format!(
+                                "Continue OpenAI account login in your browser:\n{}",
+                                login.auth_url
+                            ),
+                            Some(
+                                "The account is imported only after Codex reports login completion."
+                                    .to_string(),
+                            ),
+                        );
                     }
                 }
             }
