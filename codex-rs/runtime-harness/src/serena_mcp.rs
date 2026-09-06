@@ -79,15 +79,18 @@ mod tests {
 
         assert_eq!(launch.server_name, "serena");
         assert_eq!(launch.command, "uvx");
-        assert!(launch.args.windows(2).any(|pair| pair == ["--transport", "stdio"]));
         assert!(launch
             .args
             .windows(2)
-            .any(|pair| pair == ["--context", "ide-assistant"]));
+            .any(|pair| pair[0] == "--transport" && pair[1] == "stdio"));
         assert!(launch
             .args
             .windows(2)
-            .any(|pair| pair == ["--project", "/workspace/repo"]));
+            .any(|pair| pair[0] == "--context" && pair[1] == "ide-assistant"));
+        assert!(launch
+            .args
+            .windows(2)
+            .any(|pair| pair[0] == "--project" && pair[1] == "/workspace/repo"));
     }
 
     #[test]
