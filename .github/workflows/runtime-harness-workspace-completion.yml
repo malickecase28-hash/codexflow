@@ -91,6 +91,7 @@ jobs:
             codex-rs/tui/src/app.rs \
             codex-rs/tui/src/app/startup.rs \
             codex-rs/tui/src/app/runtime_commands.rs \
+            codex-rs/tui/src/app/app_server_events.rs \
             codex-rs/tui/src/app/event_dispatch.rs \
             codex-rs/tui/src/app_event.rs \
             codex-rs/tui/src/chatwidget/slash_dispatch.rs \
