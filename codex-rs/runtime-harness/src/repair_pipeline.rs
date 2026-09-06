@@ -87,6 +87,8 @@ pub enum RepairPipelineError {
     CritiqueCandidateMismatch { expected: String, found: String },
     #[error("verification batch omitted acceptance criteria: {0:?}")]
     MissingCriterionVerification(Vec<String>),
+    #[error("verification batch contains unknown criterion '{0}'")]
+    UnknownCriterionVerification(String),
     #[error("verification batch contains duplicate criterion '{0}'")]
     DuplicateCriterionVerification(String),
     #[error(transparent)]
@@ -177,6 +179,7 @@ impl GeneratorCriticRepairPipeline {
     ///
     /// Every acceptance criterion must appear exactly once. This prevents a
     /// repaired candidate from inheriting a stale pass from an older generation.
+    /// The complete batch is validated before any workflow state is mutated.
     /// Critic findings are advisory inputs to repair; only verifier evidence can
     /// change acceptance-criterion status or advance the pipeline to Done.
     pub fn record_verification_batch(
@@ -307,6 +310,11 @@ fn validate_verification_batch(
 ) -> Result<(), RepairPipelineError> {
     let mut by_id = BTreeMap::new();
     for verification in batch {
+        if !progress.criteria.contains_key(&verification.criterion_id) {
+            return Err(RepairPipelineError::UnknownCriterionVerification(
+                verification.criterion_id.clone(),
+            ));
+        }
         if by_id
             .insert(verification.criterion_id.as_str(), ())
             .is_some()
@@ -360,6 +368,18 @@ mod tests {
         CandidateArtifact::new("candidate-a", "parser implementation")
     }
 
+    fn pipeline_at_verify(max_repair_cycles: u32) -> GeneratorCriticRepairPipeline {
+        let mut pipeline = GeneratorCriticRepairPipeline::new(progress(), max_repair_cycles).unwrap();
+        pipeline.submit_candidate(candidate()).unwrap();
+        pipeline
+            .submit_critique(CritiqueReport {
+                candidate_id: "candidate-a".to_string(),
+                findings: Vec::new(),
+            })
+            .unwrap();
+        pipeline
+    }
+
     #[test]
     fn candidate_must_pass_through_critic_before_verification() {
         let mut pipeline = GeneratorCriticRepairPipeline::new(progress(), 2).unwrap();
@@ -373,15 +393,7 @@ mod tests {
 
     #[test]
     fn verification_batch_must_cover_every_acceptance_criterion() {
-        let mut pipeline = GeneratorCriticRepairPipeline::new(progress(), 2).unwrap();
-        pipeline.submit_candidate(candidate()).unwrap();
-        pipeline
-            .submit_critique(CritiqueReport {
-                candidate_id: "candidate-a".to_string(),
-                findings: Vec::new(),
-            })
-            .unwrap();
-
+        let mut pipeline = pipeline_at_verify(2);
         assert!(matches!(
             pipeline.record_verification_batch(vec![CriterionVerification {
                 criterion_id: "unit".to_string(),
@@ -389,6 +401,35 @@ mod tests {
             }]),
             Err(RepairPipelineError::MissingCriterionVerification(_))
         ));
+    }
+
+    #[test]
+    fn unknown_verification_is_rejected_before_any_status_changes() {
+        let mut pipeline = pipeline_at_verify(2);
+        let result = pipeline.record_verification_batch(vec![
+            CriterionVerification {
+                criterion_id: "unit".to_string(),
+                evidence: evidence(true, "unit pass"),
+            },
+            CriterionVerification {
+                criterion_id: "lint".to_string(),
+                evidence: evidence(true, "lint pass"),
+            },
+            CriterionVerification {
+                criterion_id: "invented".to_string(),
+                evidence: evidence(true, "not a real criterion"),
+            },
+        ]);
+
+        assert!(matches!(
+            result,
+            Err(RepairPipelineError::UnknownCriterionVerification(id)) if id == "invented"
+        ));
+        assert!(pipeline
+            .progress
+            .criteria
+            .values()
+            .all(|criterion| criterion.status == CriterionStatus::Pending));
     }
 
     #[test]
@@ -426,14 +467,7 @@ mod tests {
 
     #[test]
     fn repaired_candidate_requires_fresh_full_verification() {
-        let mut pipeline = GeneratorCriticRepairPipeline::new(progress(), 2).unwrap();
-        pipeline.submit_candidate(candidate()).unwrap();
-        pipeline
-            .submit_critique(CritiqueReport {
-                candidate_id: "candidate-a".to_string(),
-                findings: Vec::new(),
-            })
-            .unwrap();
+        let mut pipeline = pipeline_at_verify(2);
         pipeline
             .record_verification_batch(vec![
                 CriterionVerification {
@@ -468,14 +502,7 @@ mod tests {
 
     #[test]
     fn only_external_verification_can_advance_to_done() {
-        let mut pipeline = GeneratorCriticRepairPipeline::new(progress(), 2).unwrap();
-        pipeline.submit_candidate(candidate()).unwrap();
-        pipeline
-            .submit_critique(CritiqueReport {
-                candidate_id: "candidate-a".to_string(),
-                findings: Vec::new(),
-            })
-            .unwrap();
+        let mut pipeline = pipeline_at_verify(2);
         let stage = pipeline
             .record_verification_batch(vec![
                 CriterionVerification {
@@ -495,14 +522,7 @@ mod tests {
 
     #[test]
     fn exhausted_repair_budget_blocks_and_requests_escalation() {
-        let mut pipeline = GeneratorCriticRepairPipeline::new(progress(), 0).unwrap();
-        pipeline.submit_candidate(candidate()).unwrap();
-        pipeline
-            .submit_critique(CritiqueReport {
-                candidate_id: "candidate-a".to_string(),
-                findings: Vec::new(),
-            })
-            .unwrap();
+        let mut pipeline = pipeline_at_verify(0);
         let stage = pipeline
             .record_verification_batch(vec![
                 CriterionVerification {
