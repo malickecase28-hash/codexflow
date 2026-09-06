@@ -57,12 +57,12 @@ impl ToolDescriptor {
         self
     }
 
-    pub const fn with_cost(mut self, cost: ToolCost) -> Self {
+    pub fn with_cost(mut self, cost: ToolCost) -> Self {
         self.cost = cost;
         self
     }
 
-    pub const fn with_tier(mut self, tier: ToolTier) -> Self {
+    pub fn with_tier(mut self, tier: ToolTier) -> Self {
         self.tier = tier;
         self
     }
@@ -325,7 +325,10 @@ mod tests {
             },
         });
 
-        let verdict = chain.evaluate(&ToolPolicyRequest::new("worker", ToolDescriptor::new("bash")));
+        let verdict = chain.evaluate(&ToolPolicyRequest::new(
+            "worker",
+            ToolDescriptor::new("bash"),
+        ));
 
         assert_eq!(
             verdict.decision,
@@ -344,7 +347,10 @@ mod tests {
             decision: ToolPolicyDecision::Abstain,
         });
 
-        let verdict = chain.evaluate(&ToolPolicyRequest::new("worker", ToolDescriptor::new("bash")));
+        let verdict = chain.evaluate(&ToolPolicyRequest::new(
+            "worker",
+            ToolDescriptor::new("bash"),
+        ));
 
         assert!(matches!(
             verdict.decision,
