@@ -15,6 +15,19 @@ replace_once(
     "mod recap;\nmod replay_filter;\n",
     "mod recap;\nmod replay_filter;\nmod runtime_commands;\n",
 )
+replace_once(
+    "codex-rs/tui/src/app.rs",
+    "    pub(crate) runtime_bridge: RuntimeBridge,\n",
+    "    pub(crate) runtime_bridge: RuntimeBridge,\n"
+    "    pending_runtime_openai_login: Option<String>,\n",
+)
+replace_once(
+    "codex-rs/tui/src/app/startup.rs",
+    "            runtime_bridge,\n            session_telemetry: session_telemetry.clone(),\n",
+    "            runtime_bridge,\n"
+    "            pending_runtime_openai_login: None,\n"
+    "            session_telemetry: session_telemetry.clone(),\n",
+)
 
 replace_once(
     "codex-rs/tui/src/app_event.rs",
@@ -33,6 +46,19 @@ replace_once(
     "                self.handle_runtime_slash_command(command, args).await;\n"
     "            }\n"
     "            AppEvent::UpdateModel(model) => {\n",
+)
+
+replace_once(
+    "codex-rs/tui/src/app/app_server_events.rs",
+    "        match &notification {\n"
+    "            ServerNotification::ServerRequestResolved(notification) => {\n",
+    "        match &notification {\n"
+    "            ServerNotification::AccountLoginCompleted(notification) => {\n"
+    "                if self.handle_runtime_openai_login_completed(notification).await {\n"
+    "                    return;\n"
+    "                }\n"
+    "            }\n"
+    "            ServerNotification::ServerRequestResolved(notification) => {\n",
 )
 
 replace_once(
