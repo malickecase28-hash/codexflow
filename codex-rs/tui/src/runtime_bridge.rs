@@ -4,7 +4,6 @@ use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ReloadAccountAuthResponse;
 use codex_app_server_protocol::RequestId;
 use codex_runtime_harness::CursorAcpConfig;
-use codex_runtime_harness::ModelCatalog;
 use codex_runtime_harness::ModelDescriptor;
 use codex_runtime_harness::NativeOpenAiAuthReloader;
 use codex_runtime_harness::NativeOpenAiReloadError;
@@ -111,10 +110,6 @@ impl RuntimeBridge {
         self.harness.selection().await
     }
 
-    pub(crate) async fn catalog(&self) -> ModelCatalog {
-        self.harness.catalog().await
-    }
-
     pub(crate) async fn refresh_cursor_models(&self) -> Result<Vec<ModelDescriptor>> {
         Ok(self.harness.refresh_cursor_models().await?)
     }
@@ -184,17 +179,6 @@ impl RuntimeBridge {
 
     pub(crate) async fn login_cursor(&self, label_hint: Option<String>) -> Result<RuntimeSelection> {
         self.harness.login_cursor(label_hint).await?;
-        Ok(self.harness.selection().await)
-    }
-
-    pub(crate) async fn import_after_native_login(
-        &self,
-        provider: ProviderId,
-        label_hint: Option<String>,
-    ) -> Result<RuntimeSelection> {
-        self.harness
-            .import_after_native_login(provider, label_hint)
-            .await?;
         Ok(self.harness.selection().await)
     }
 
