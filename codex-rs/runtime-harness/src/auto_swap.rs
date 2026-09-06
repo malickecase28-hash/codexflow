@@ -4,6 +4,12 @@ use crate::types::ProviderId;
 use subswap_core::PolicyConfig;
 use subswap_core::PolicyDecision;
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeAutoSwapStatus {
+    pub enabled: bool,
+    pub threshold: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeAutoSwapDecision {
     Stay {
@@ -23,6 +29,24 @@ pub enum RuntimeAutoSwapDecision {
 }
 
 impl RuntimeHarness {
+    pub fn auto_swap_status(&self) -> RuntimeAutoSwapStatus {
+        let settings = subswap_core::settings::current();
+        RuntimeAutoSwapStatus {
+            enabled: settings.auto_swap.enabled,
+            threshold: settings.auto_swap.threshold,
+        }
+    }
+
+    pub fn set_auto_swap_enabled(
+        &self,
+        enabled: bool,
+    ) -> Result<RuntimeAutoSwapStatus, RuntimeHarnessError> {
+        subswap_core::settings::set_auto_swap_enabled(enabled)
+            .map_err(crate::AccountBrokerError::from)?;
+        subswap_core::settings::reload_from_file().map_err(crate::AccountBrokerError::from)?;
+        Ok(self.auto_swap_status())
+    }
+
     /// Evaluate the pinned subswap default policy for the active provider only.
     ///
     /// The underlying harness activation path is used when a swap is selected,
