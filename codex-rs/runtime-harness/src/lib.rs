@@ -27,6 +27,7 @@ pub mod session;
 pub mod structured_generation;
 pub mod supervisor;
 pub mod types;
+pub mod workflow;
 
 pub use accounts::AccountBroker;
 pub use accounts::AccountBrokerError;
@@ -149,6 +150,17 @@ pub use types::RuntimeEventSink;
 pub use types::RuntimeInteractionHandler;
 pub use types::RuntimeModelId;
 pub use types::RuntimeSessionId;
+pub use workflow::AcceptanceCriterion;
+pub use workflow::CompletionGate;
+pub use workflow::CriterionStatus;
+pub use workflow::LoopDetector;
+pub use workflow::RepairAttempt;
+pub use workflow::VerificationEvidence;
+pub use workflow::VerificationKind;
+pub use workflow::WorkflowFailure;
+pub use workflow::WorkflowFingerprint;
+pub use workflow::WorkflowProgress;
+pub use workflow::WorkflowStateError;
 
 pub const SUBSWAP_REVISION: &str = "c839bd4de69397612d09fdc9312e03cf6e9c9e05";
 pub const ACP_PROTOCOL_VERSION: u32 = 1;
