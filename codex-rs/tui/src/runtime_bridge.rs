@@ -1,6 +1,10 @@
 use crate::legacy_core::config::Config;
 use codex_app_server_client::AppServerRequestHandle;
+use codex_app_server_protocol::CancelLoginAccountParams;
+use codex_app_server_protocol::CancelLoginAccountResponse;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::LoginAccountParams;
+use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::ReloadAccountAuthResponse;
 use codex_app_server_protocol::RequestId;
 use codex_runtime_harness::CursorAcpConfig;
@@ -30,6 +34,12 @@ pub(crate) struct RuntimeAccountSummary {
     pub(crate) id: String,
     pub(crate) label: String,
     pub(crate) active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeOpenAiLogin {
+    pub(crate) login_id: String,
+    pub(crate) auth_url: String,
 }
 
 /// Reloads the exact app-server-owned authentication manager used by native
@@ -78,6 +88,7 @@ impl NativeOpenAiAuthReloader for AppServerOpenAiAuthReloader {
 /// does not launch `agent acp`; the child starts only when a Cursor route is used.
 pub(crate) struct RuntimeBridge {
     harness: Arc<RuntimeHarness>,
+    app_server_request_handle: AppServerRequestHandle,
     quota_shutdown: watch::Sender<bool>,
     quota_tasks: Vec<JoinHandle<()>>,
 }
@@ -98,7 +109,7 @@ impl RuntimeBridge {
             ..Default::default()
         };
         let openai_auth_reloader = Arc::new(AppServerOpenAiAuthReloader::new(
-            app_server_request_handle,
+            app_server_request_handle.clone(),
         ));
         let harness = Arc::new(RuntimeHarness::embedded_with_openai_reloader(
             default_model,
@@ -131,6 +142,7 @@ impl RuntimeBridge {
 
         Ok(Self {
             harness,
+            app_server_request_handle,
             quota_shutdown,
             quota_tasks,
         })
@@ -209,6 +221,62 @@ impl RuntimeBridge {
 
     pub(crate) async fn login_cursor(&self, label_hint: Option<String>) -> Result<RuntimeSelection> {
         self.harness.login_cursor(label_hint).await?;
+        Ok(self.harness.selection().await)
+    }
+
+    /// Start Codex's official browser-based ChatGPT login. The app-server owns
+    /// the login transaction and writes the native credential store; the runtime
+    /// harness imports it only after the matching completion notification.
+    pub(crate) async fn start_openai_login(&self) -> Result<RuntimeOpenAiLogin> {
+        let request_id = RequestId::String(format!(
+            "runtime-account-login-{}",
+            Uuid::new_v4()
+        ));
+        let response = self
+            .app_server_request_handle
+            .request_typed::<LoginAccountResponse>(ClientRequest::LoginAccount {
+                request_id,
+                params: LoginAccountParams::Chatgpt {
+                    app_brand: None,
+                    codex_streamlined_login: false,
+                    use_hosted_login_success_page: false,
+                },
+            })
+            .await?;
+        let LoginAccountResponse::Chatgpt { login_id, auth_url } = response else {
+            return Err(color_eyre::eyre::eyre!(
+                "account/login/start returned a non-ChatGPT response"
+            ));
+        };
+
+        if matches!(
+            &self.app_server_request_handle,
+            AppServerRequestHandle::InProcess(_)
+        ) && let Err(error) = webbrowser::open(&auth_url)
+        {
+            tracing::warn!(error = %error, "failed to open browser for runtime account login");
+        }
+
+        Ok(RuntimeOpenAiLogin { login_id, auth_url })
+    }
+
+    pub(crate) async fn cancel_openai_login(&self, login_id: String) -> Result<()> {
+        self.app_server_request_handle
+            .request_typed::<CancelLoginAccountResponse>(ClientRequest::CancelLoginAccount {
+                request_id: RequestId::String(format!(
+                    "runtime-account-login-cancel-{}",
+                    Uuid::new_v4()
+                )),
+                params: CancelLoginAccountParams { login_id },
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn import_completed_openai_login(&self) -> Result<RuntimeSelection> {
+        self.harness
+            .import_after_native_login(ProviderId::OpenAi, /*label_hint*/ None)
+            .await?;
         Ok(self.harness.selection().await)
     }
 
