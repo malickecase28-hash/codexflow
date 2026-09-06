@@ -4,19 +4,23 @@ on:
   pull_request:
     branches:
       - main
+      - codexflow/phase3c-event-runtime-master-map
 
 permissions:
   contents: write
 
 jobs:
   regenerate-lock:
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'codexflow/phase3c-event-runtime-master-map'
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.pull_request.head.ref == 'codexflow/phase3c-event-runtime-master-map' ||
+       github.event.pull_request.head.ref == 'codexflow/bazel-stabilization')
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout live PR branch
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: codexflow/phase3c-event-runtime-master-map
+          ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
 
       - name: Prepare Bazel CI
@@ -33,6 +37,8 @@ jobs:
 
       - name: Commit regenerated lockfile
         shell: bash
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
           if git diff --quiet -- MODULE.bazel.lock; then
@@ -43,4 +49,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add MODULE.bazel.lock
           git commit -m "fix(bazel): regenerate module lockfile"
-          git push origin HEAD:codexflow/phase3c-event-runtime-master-map
+          git push origin "HEAD:${HEAD_REF}"
