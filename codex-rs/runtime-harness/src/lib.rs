@@ -7,6 +7,7 @@
 
 pub mod accounts;
 pub mod auth;
+pub mod auto_swap;
 pub mod capabilities;
 pub mod controller;
 pub mod cursor_acp;
@@ -28,6 +29,7 @@ pub use accounts::Activation;
 pub use accounts::ImportedAccount;
 pub use auth::AuthCoordinator;
 pub use auth::AuthCoordinatorError;
+pub use auto_swap::RuntimeAutoSwapDecision;
 pub use capabilities::ProviderCapabilities;
 pub use controller::RuntimeHarness;
 pub use controller::RuntimeHarnessError;
