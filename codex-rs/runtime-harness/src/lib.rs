@@ -8,6 +8,7 @@
 pub mod accounts;
 pub mod auth;
 pub mod capabilities;
+pub mod checkpoint;
 pub mod code_intelligence;
 pub mod context_compression;
 pub mod controller;
@@ -33,6 +34,10 @@ pub use accounts::ImportedAccount;
 pub use auth::AuthCoordinator;
 pub use auth::AuthCoordinatorError;
 pub use capabilities::ProviderCapabilities;
+pub use checkpoint::CHECKPOINT_FORMAT_VERSION;
+pub use checkpoint::CheckpointError;
+pub use checkpoint::CheckpointStore;
+pub use checkpoint::HarnessCheckpoint;
 pub use code_intelligence::CodeIntelligenceChain;
 pub use code_intelligence::CodeIntelligenceError;
 pub use code_intelligence::CodeIntelligenceProvider;
