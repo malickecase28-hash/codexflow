@@ -1,6 +1,9 @@
+use crate::VerificationEvidence;
+use crate::VerificationKind;
 use serde::Deserialize;
 use serde::Serialize;
 use std::fs;
+#[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
 use tokio::process::Command;
@@ -70,12 +73,33 @@ pub struct BrowserVerificationEvidence {
     pub commands: Vec<BrowserCommandEvidence>,
 }
 
+impl BrowserVerificationEvidence {
+    pub fn workflow_evidence(&self) -> VerificationEvidence {
+        let failed = self.assertions.iter().filter(|result| !result.passed).count();
+        VerificationEvidence {
+            verifier: "playwright-cli".to_string(),
+            kind: VerificationKind::Browser,
+            passed: self.passed,
+            detail: format!(
+                "{} browser assertion(s), {failed} failed",
+                self.assertions.len()
+            ),
+            artifact: self
+                .screenshot_path
+                .clone()
+                .or_else(|| Some(self.snapshot_path.clone())),
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum BrowserVerificationError {
     #[error("invalid Playwright session name '{0}'")]
     InvalidSession(String),
     #[error("browser verification plan has an empty URL")]
     EmptyUrl,
+    #[error("browser verification plan requires at least one snapshot assertion")]
+    EmptyAssertions,
     #[error("Playwright command failed: {args:?}; stderr: {stderr}")]
     CommandFailed { args: Vec<String>, stderr: String },
     #[error("failed to execute Playwright command {args:?}: {source}")]
@@ -236,6 +260,9 @@ fn validate_plan(plan: &BrowserVerificationPlan) -> Result<(), BrowserVerificati
     if plan.url.trim().is_empty() {
         return Err(BrowserVerificationError::EmptyUrl);
     }
+    if plan.assertions.is_empty() {
+        return Err(BrowserVerificationError::EmptyAssertions);
+    }
     if plan.session.is_empty()
         || !plan
             .session
@@ -253,7 +280,10 @@ mod tests {
 
     #[test]
     fn plan_rejects_invalid_session_names() {
-        let plan = BrowserVerificationPlan::new("bad session", "https://example.com");
+        let mut plan = BrowserVerificationPlan::new("bad session", "https://example.com");
+        plan.assertions.push(SnapshotAssertion::Contains {
+            text: "Example".to_string(),
+        });
         assert!(matches!(
             validate_plan(&plan),
             Err(BrowserVerificationError::InvalidSession(_))
@@ -262,10 +292,22 @@ mod tests {
 
     #[test]
     fn plan_rejects_empty_urls() {
-        let plan = BrowserVerificationPlan::new("test", "  ");
+        let mut plan = BrowserVerificationPlan::new("test", "  ");
+        plan.assertions.push(SnapshotAssertion::Contains {
+            text: "Example".to_string(),
+        });
         assert!(matches!(
             validate_plan(&plan),
             Err(BrowserVerificationError::EmptyUrl)
+        ));
+    }
+
+    #[test]
+    fn plan_rejects_vacuous_verification() {
+        let plan = BrowserVerificationPlan::new("test", "https://example.com");
+        assert!(matches!(
+            validate_plan(&plan),
+            Err(BrowserVerificationError::EmptyAssertions)
         ));
     }
 
@@ -282,6 +324,26 @@ mod tests {
         let json = serde_json::to_string(&assertions).unwrap();
         let restored: Vec<SnapshotAssertion> = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, assertions);
+    }
+
+    #[test]
+    fn browser_evidence_maps_into_workflow_verification() {
+        let evidence = BrowserVerificationEvidence {
+            passed: true,
+            snapshot_path: PathBuf::from("snapshot.yml"),
+            screenshot_path: Some(PathBuf::from("page.png")),
+            assertions: vec![SnapshotAssertionResult {
+                assertion: SnapshotAssertion::Contains {
+                    text: "Save".to_string(),
+                },
+                passed: true,
+            }],
+            commands: Vec::new(),
+        };
+        let workflow = evidence.workflow_evidence();
+        assert!(workflow.passed);
+        assert_eq!(workflow.kind, VerificationKind::Browser);
+        assert_eq!(workflow.artifact, Some(PathBuf::from("page.png")));
     }
 
     #[test]
