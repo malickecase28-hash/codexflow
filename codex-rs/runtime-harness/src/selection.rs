@@ -187,7 +187,11 @@ mod tests {
         let directory = std::env::temp_dir().join(format!(
             "codex-runtime-selection-test-{}-{}",
             std::process::id(),
-            std::thread::current().name().unwrap_or("thread")
+            // Thread names contain `::`, which Windows rejects in filenames.
+            std::thread::current()
+                .name()
+                .unwrap_or("thread")
+                .replace([':', '<', '>', '"', '/', '\\', '|', '?', '*'], "_")
         ));
         let path = directory.join("selection.json");
         let store = RuntimeSelectionStore::new(path);

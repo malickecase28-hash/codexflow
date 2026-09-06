@@ -1551,6 +1551,11 @@ impl MessageProcessor {
                     .login_account(request_id.clone(), params)
                     .await
             }
+            ClientRequest::ReloadAccountAuth { .. } => {
+                self.account_processor
+                    .reload_account_auth(request_id.clone())
+                    .await
+            }
             ClientRequest::BedrockDiscover { params, .. } => {
                 self.account_processor.bedrock_discover(params).await
             }

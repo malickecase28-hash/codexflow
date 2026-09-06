@@ -125,6 +125,24 @@ impl AccountRequestProcessor {
         self.logout_v2(request_id).await.map(|()| None)
     }
 
+    pub(crate) async fn reload_account_auth(
+        &self,
+        request_id: ConnectionRequestId,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let result = self.reload_account_auth_response().await;
+        let account_updated = result
+            .as_ref()
+            .ok()
+            .map(|_| self.current_account_updated_notification());
+        self.outgoing.send_result(request_id, result).await;
+        if let Some(payload) = account_updated {
+            self.outgoing
+                .send_server_notification(ServerNotification::AccountUpdated(payload))
+                .await;
+        }
+        Ok(None)
+    }
+
     pub(crate) async fn cancel_login_account(
         &self,
         params: CancelLoginAccountParams,
@@ -948,6 +966,46 @@ impl AccountRequestProcessor {
                 .send_server_notification(ServerNotification::AccountUpdated(payload_v2))
                 .await;
         }
+    }
+
+    async fn reload_account_auth_response(
+        &self,
+    ) -> Result<ReloadAccountAuthResponse, JSONRPCErrorError> {
+        if self.auth_manager.is_workload_identity_selected() {
+            return Err(self.configured_auth_owned_by_host_error());
+        }
+        if self.auth_manager.is_external_chatgpt_auth_active() {
+            return Err(self.external_auth_active_error());
+        }
+
+        // Prevent an in-flight interactive login from overwriting the account
+        // selected by the embedded runtime harness after this reload completes.
+        self.cancel_active_login().await;
+        self.auth_manager.reload().await;
+
+        let auth = self.auth_manager.auth_cached().ok_or_else(|| {
+            invalid_request("native auth reload did not produce usable OpenAI credentials")
+        })?;
+
+        self.config_manager.clear_cloud_config_bundle_loader();
+        if auth.uses_codex_backend() {
+            self.config_manager.replace_cloud_config_bundle_loader(
+                self.auth_manager.clone(),
+                self.config.chatgpt_base_url.clone(),
+                self.config.http_client_factory(),
+            );
+        }
+        self.config_manager
+            .sync_default_client_residency_requirement()
+            .await;
+        Self::maybe_refresh_plugin_caches_for_current_config(
+            &self.config_manager,
+            &self.thread_manager,
+            Some(auth),
+        )
+        .await;
+
+        Ok(ReloadAccountAuthResponse {})
     }
 
     async fn logout_common(&self) -> std::result::Result<Option<AuthMode>, JSONRPCErrorError> {

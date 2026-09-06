@@ -52,6 +52,7 @@ use codex_app_server_protocol::ModelListParams;
 use codex_app_server_protocol::ModelListResponse;
 use codex_app_server_protocol::NewThreadModelDefaults;
 use codex_app_server_protocol::RateLimitSnapshot;
+use codex_app_server_protocol::ReloadAccountAuthResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ReviewDelivery;
 use codex_app_server_protocol::ReviewStartParams;
@@ -655,6 +656,25 @@ impl AppServerSession {
 
     pub(crate) fn supports_paginated_history(&self) -> bool {
         self.history_support == ThreadHistorySupport::Paginated
+    }
+
+    /// Reconcile the embedded app-server's exact live AuthManager with the
+    /// native credential store. Runtime account switching uses this narrow RPC
+    /// instead of exposing AuthManager to the TUI.
+    // Wired into the runtime bridge's NativeOpenAiAuthReloader in the
+    // runtime-harness integration step; remove this expect then.
+    #[expect(dead_code)]
+    pub(crate) async fn reload_account_auth(&mut self) -> Result<()> {
+        let request_id = self.next_request_id();
+        let _: ReloadAccountAuthResponse = self
+            .client
+            .request_typed(ClientRequest::ReloadAccountAuth {
+                request_id,
+                params: None,
+            })
+            .await
+            .wrap_err("account/auth/reload failed during runtime account switch")?;
+        Ok(())
     }
 
     /// Fetches the current account info without refreshing the auth token.
