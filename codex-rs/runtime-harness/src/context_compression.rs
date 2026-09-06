@@ -1,9 +1,16 @@
 use std::collections::HashMap;
 use std::fmt;
 
-const CONTEXT_FORMAT_VERSION: u32 = 1;
+const CONTEXT_FORMAT_VERSION: u32 = 2;
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
+const CHUNK_SEPARATOR_BYTES: usize = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextRetention {
+    Compressible,
+    Pinned,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextChunk {
@@ -11,6 +18,7 @@ pub struct ContextChunk {
     pub source: String,
     pub content: String,
     pub priority: u8,
+    pub retention: ContextRetention,
 }
 
 impl ContextChunk {
@@ -29,7 +37,13 @@ impl ContextChunk {
             source: source.into(),
             content: content.into(),
             priority,
+            retention: ContextRetention::Compressible,
         })
+    }
+
+    pub fn pinned(mut self) -> Self {
+        self.retention = ContextRetention::Pinned;
+        self
     }
 }
 
@@ -38,6 +52,8 @@ pub struct CompressionPolicy {
     /// Maximum number of UTF-8 bytes in the rendered compact context.
     ///
     /// Compression is whole-chunk only: a selected chunk is never truncated.
+    /// Pinned chunks are mandatory and cause compression to fail if they cannot
+    /// fit rather than silently dropping an invariant.
     pub max_bytes: usize,
 }
 
@@ -120,6 +136,7 @@ pub enum ContextCompressionError {
     EmptyChunkId,
     DuplicateChunkId(String),
     UnknownChunkId(String),
+    PinnedContextExceedsBudget { required: usize, budget: usize },
 }
 
 impl fmt::Display for ContextCompressionError {
@@ -128,6 +145,10 @@ impl fmt::Display for ContextCompressionError {
             Self::EmptyChunkId => f.write_str("context chunk id cannot be empty"),
             Self::DuplicateChunkId(id) => write!(f, "duplicate context chunk id '{id}'"),
             Self::UnknownChunkId(id) => write!(f, "unknown context chunk id '{id}'"),
+            Self::PinnedContextExceedsBudget { required, budget } => write!(
+                f,
+                "pinned context requires {required} bytes but the context budget is {budget} bytes"
+            ),
         }
     }
 }
@@ -136,11 +157,12 @@ impl std::error::Error for ContextCompressionError {}
 
 /// Deterministically compact context while retaining an exact in-memory archive.
 ///
-/// Chunks are selected by descending priority, with original order as the
-/// deterministic tie-breaker. Selected chunks are rendered back in original
-/// order so surrounding context remains readable. Omitted chunks remain
-/// addressable by id through [`CompressedContext::rehydrate`] and the complete
-/// original bundle can be reconstructed with [`CompressedContext::rehydrate_all`].
+/// Pinned chunks are always retained or the operation fails. Remaining chunks
+/// are selected by descending priority, with original order as the deterministic
+/// tie-breaker. Selected chunks render back in original order so surrounding
+/// context remains readable. Omitted chunks remain addressable by id through
+/// [`CompressedContext::rehydrate`] and the complete original bundle can be
+/// reconstructed with [`CompressedContext::rehydrate_all`].
 pub fn compress_context(
     chunks: Vec<ContextChunk>,
     policy: CompressionPolicy,
@@ -148,18 +170,39 @@ pub fn compress_context(
     validate_chunks(&chunks)?;
 
     let input_bytes = chunks.iter().map(rendered_chunk_len).sum();
-    let mut ranked: Vec<usize> = (0..chunks.len()).collect();
+    let mut retained = chunks
+        .iter()
+        .map(|chunk| chunk.retention == ContextRetention::Pinned)
+        .collect::<Vec<_>>();
+    let pinned_bytes = rendered_selected_len(&chunks, &retained);
+    if pinned_bytes > policy.max_bytes {
+        return Err(ContextCompressionError::PinnedContextExceedsBudget {
+            required: pinned_bytes,
+            budget: policy.max_bytes,
+        });
+    }
+
+    let mut used_bytes = pinned_bytes;
+    let mut retained_count = retained.iter().filter(|keep| **keep).count();
+    let mut ranked = chunks
+        .iter()
+        .enumerate()
+        .filter(|(_, chunk)| chunk.retention == ContextRetention::Compressible)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
     ranked.sort_by_key(|&index| (std::cmp::Reverse(chunks[index].priority), index));
 
-    let mut retained = vec![false; chunks.len()];
-    let mut used_bytes = 0usize;
-
     for index in ranked {
-        let separator_bytes = if used_bytes > 0 { 2 } else { 0 };
+        let separator_bytes = if retained_count > 0 {
+            CHUNK_SEPARATOR_BYTES
+        } else {
+            0
+        };
         let candidate_bytes = rendered_chunk_len(&chunks[index]) + separator_bytes;
         if used_bytes.saturating_add(candidate_bytes) <= policy.max_bytes {
             retained[index] = true;
             used_bytes += candidate_bytes;
+            retained_count += 1;
         }
     }
 
@@ -176,13 +219,8 @@ pub fn compress_context(
         .map(|(chunk, _)| chunk.id.clone())
         .collect::<Vec<_>>();
 
-    let rendered = chunks
-        .iter()
-        .zip(&retained)
-        .filter(|(_, keep)| **keep)
-        .map(|(chunk, _)| render_chunk(chunk))
-        .collect::<Vec<_>>()
-        .join("\n\n");
+    let rendered = render_selected(&chunks, &retained);
+    debug_assert_eq!(used_bytes, rendered.len());
 
     let stats = CompressionStats {
         input_chunks: chunks.len(),
@@ -226,6 +264,27 @@ fn rendered_chunk_len(chunk: &ContextChunk) -> usize {
     render_chunk(chunk).len()
 }
 
+fn render_selected(chunks: &[ContextChunk], retained: &[bool]) -> String {
+    chunks
+        .iter()
+        .zip(retained)
+        .filter(|(_, keep)| **keep)
+        .map(|(chunk, _)| render_chunk(chunk))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn rendered_selected_len(chunks: &[ContextChunk], retained: &[bool]) -> usize {
+    let selected = chunks
+        .iter()
+        .zip(retained)
+        .filter(|(_, keep)| **keep)
+        .map(|(chunk, _)| rendered_chunk_len(chunk))
+        .collect::<Vec<_>>();
+    selected.iter().sum::<usize>()
+        + selected.len().saturating_sub(1) * CHUNK_SEPARATOR_BYTES
+}
+
 fn fingerprint_chunks(chunks: &[ContextChunk]) -> String {
     let mut hash = FNV_OFFSET_BASIS;
     hash_bytes(&mut hash, &CONTEXT_FORMAT_VERSION.to_le_bytes());
@@ -234,6 +293,11 @@ fn fingerprint_chunks(chunks: &[ContextChunk]) -> String {
         hash_field(&mut hash, chunk.source.as_bytes());
         hash_field(&mut hash, chunk.content.as_bytes());
         hash_bytes(&mut hash, &[chunk.priority]);
+        let retention = match chunk.retention {
+            ContextRetention::Compressible => 0,
+            ContextRetention::Pinned => 1,
+        };
+        hash_bytes(&mut hash, &[retention]);
     }
     format!("{hash:016x}")
 }
@@ -266,7 +330,8 @@ mod tests {
             chunk("c", "gamma", 5),
         ];
         let single_b_budget = rendered_chunk_len(&chunks[1]);
-        let first = compress_context(chunks.clone(), CompressionPolicy::new(single_b_budget)).unwrap();
+        let first =
+            compress_context(chunks.clone(), CompressionPolicy::new(single_b_budget)).unwrap();
         let second = compress_context(chunks, CompressionPolicy::new(single_b_budget)).unwrap();
 
         assert_eq!(first, second);
@@ -281,7 +346,9 @@ mod tests {
             chunk("b", "beta", 1),
             chunk("c", "gamma", 9),
         ];
-        let budget = rendered_chunk_len(&chunks[0]) + rendered_chunk_len(&chunks[2]) + 2;
+        let budget = rendered_chunk_len(&chunks[0])
+            + rendered_chunk_len(&chunks[2])
+            + CHUNK_SEPARATOR_BYTES;
         let compressed = compress_context(chunks, CompressionPolicy::new(budget)).unwrap();
 
         assert_eq!(
@@ -295,9 +362,44 @@ mod tests {
     }
 
     #[test]
+    fn pinned_chunks_are_never_dropped_for_higher_priority_optional_context() {
+        let pinned = chunk("system", "required invariant", 1).pinned();
+        let optional = chunk("tool", "high priority tool output", 255);
+        let budget = rendered_chunk_len(&pinned);
+        let compressed = compress_context(
+            vec![pinned.clone(), optional],
+            CompressionPolicy::new(budget),
+        )
+        .unwrap();
+
+        assert_eq!(compressed.retained_ids(), &["system".to_string()]);
+        assert!(compressed.rendered().contains("required invariant"));
+        assert_eq!(compressed.rehydrate(["system"].into_iter()).unwrap(), vec![pinned]);
+    }
+
+    #[test]
+    fn pinned_context_over_budget_fails_instead_of_violating_invariant() {
+        let pinned = chunk("system", "required invariant", 1).pinned();
+        let required = rendered_chunk_len(&pinned);
+        let error = compress_context(
+            vec![pinned],
+            CompressionPolicy::new(required.saturating_sub(1)),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            ContextCompressionError::PinnedContextExceedsBudget {
+                required,
+                budget: required.saturating_sub(1),
+            }
+        );
+    }
+
+    #[test]
     fn exact_rehydration_round_trips_omitted_context() {
         let chunks = vec![
-            chunk("system", "never drop", 255),
+            chunk("system", "never drop", 255).pinned(),
             chunk("tool", "large tool output", 1),
         ];
         let compressed = compress_context(
@@ -329,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_budget_keeps_archive_reversible() {
+    fn zero_budget_keeps_optional_archive_reversible() {
         let chunks = vec![chunk("a", "alpha", 1)];
         let compressed = compress_context(chunks.clone(), CompressionPolicy::new(0)).unwrap();
 
@@ -340,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn fingerprint_changes_when_content_changes() {
+    fn fingerprint_changes_when_content_or_retention_changes() {
         let first = compress_context(
             vec![chunk("a", "alpha", 1)],
             CompressionPolicy::new(1_000),
@@ -351,7 +453,13 @@ mod tests {
             CompressionPolicy::new(1_000),
         )
         .unwrap();
+        let third = compress_context(
+            vec![chunk("a", "alpha", 1).pinned()],
+            CompressionPolicy::new(1_000),
+        )
+        .unwrap();
 
         assert_ne!(first.fingerprint(), second.fingerprint());
+        assert_ne!(first.fingerprint(), third.fingerprint());
     }
 }
