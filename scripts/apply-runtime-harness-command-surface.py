@@ -10,6 +10,15 @@ def replace_once(path: str, old: str, new: str) -> None:
     target.write_text(text.replace(old, new, 1))
 
 
+# Runtime commands execute at App scope. Opening the model popup is crate-visible,
+# but the queue-suppression helper is intentionally private to chatwidget.
+replace_once(
+    "codex-rs/tui/src/app/runtime_commands.rs",
+    "                    self.chat_widget.open_model_popup();\n"
+    "                    self.chat_widget.defer_input_until_settings_applied();\n",
+    "                    self.chat_widget.open_model_popup();\n",
+)
+
 replace_once(
     "codex-rs/tui/src/app.rs",
     "mod recap;\nmod replay_filter;\n",
