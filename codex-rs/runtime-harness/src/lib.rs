@@ -31,6 +31,7 @@ pub use accounts::ImportedAccount;
 pub use auth::AuthCoordinator;
 pub use auth::AuthCoordinatorError;
 pub use auto_swap::RuntimeAutoSwapDecision;
+pub use auto_swap::RuntimeAutoSwapStatus;
 pub use capabilities::ProviderCapabilities;
 pub use controller::RuntimeHarness;
 pub use controller::RuntimeHarnessError;
