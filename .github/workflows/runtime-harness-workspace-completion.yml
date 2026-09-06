@@ -8,6 +8,8 @@ on:
       - .github/workflows/runtime-harness-workspace-completion.yml
       - scripts/apply-runtime-harness-workspace-completion.py
       - scripts/apply-runtime-harness-sqlite-compat.py
+      - scripts/apply-runtime-harness-live-auth-adapter.py
+      - codex-rs/tui/src/runtime_bridge.rs
   pull_request:
     branches:
       - main
@@ -31,6 +33,8 @@ jobs:
         run: python scripts/apply-runtime-harness-sqlite-compat.py
       - name: Apply shipping workspace and TUI bridge integration
         run: python scripts/apply-runtime-harness-workspace-completion.py
+      - name: Wire exact OpenAI auth reload adapter
+        run: python scripts/apply-runtime-harness-live-auth-adapter.py
       - name: Format
         working-directory: codex-rs
         run: just fmt
@@ -68,7 +72,8 @@ jobs:
           set -euo pipefail
           git rm .github/workflows/runtime-harness-workspace-completion.yml \
             scripts/apply-runtime-harness-workspace-completion.py \
-            scripts/apply-runtime-harness-sqlite-compat.py
+            scripts/apply-runtime-harness-sqlite-compat.py \
+            scripts/apply-runtime-harness-live-auth-adapter.py
           git add -A \
             MODULE.bazel.lock \
             codex-rs/Cargo.toml \
@@ -83,5 +88,5 @@ jobs:
             third_party/subswap-provider-cursor-compat
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "feat(runtime): wire harness into shipping TUI workspace"
+          git commit -m "feat(runtime): wire harness and live auth into shipping TUI"
           git push origin HEAD:codexflow/runtime-harness-completion
