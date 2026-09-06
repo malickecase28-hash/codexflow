@@ -1,6 +1,7 @@
 use crate::HarnessEvent;
 use crate::HarnessSession;
 use crate::RuntimeModelId;
+use crate::WorkflowProgress;
 use serde::Deserialize;
 use serde::Serialize;
 use std::fs;
@@ -9,7 +10,7 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
-pub const CHECKPOINT_FORMAT_VERSION: u32 = 1;
+pub const CHECKPOINT_FORMAT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HarnessCheckpoint {
@@ -19,6 +20,7 @@ pub struct HarnessCheckpoint {
     pub model: RuntimeModelId,
     pub account: Option<String>,
     pub transcript: Vec<HarnessEvent>,
+    pub workflow: Option<WorkflowProgress>,
     /// Generation of the disposable backend at snapshot time. This is evidence
     /// only; restored sessions always start with no backend binding.
     pub source_backend_generation: u64,
@@ -26,6 +28,13 @@ pub struct HarnessCheckpoint {
 
 impl HarnessCheckpoint {
     pub fn capture(session: &HarnessSession) -> Result<Self, CheckpointError> {
+        Self::capture_with_workflow(session, None)
+    }
+
+    pub fn capture_with_workflow(
+        session: &HarnessSession,
+        workflow: Option<&WorkflowProgress>,
+    ) -> Result<Self, CheckpointError> {
         if session.is_turn_active() {
             return Err(CheckpointError::TurnActive);
         }
@@ -36,26 +45,29 @@ impl HarnessCheckpoint {
             model: session.model.clone(),
             account: session.account.clone(),
             transcript: session.transcript.clone(),
+            workflow: workflow.cloned(),
             source_backend_generation: session.backend_generation,
         })
     }
 
     pub fn restore(self) -> Result<HarnessSession, CheckpointError> {
+        self.restore_bundle().map(|(session, _)| session)
+    }
+
+    pub fn restore_bundle(
+        self,
+    ) -> Result<(HarnessSession, Option<WorkflowProgress>), CheckpointError> {
         if self.format_version != CHECKPOINT_FORMAT_VERSION {
             return Err(CheckpointError::UnsupportedVersion {
                 found: self.format_version,
                 supported: CHECKPOINT_FORMAT_VERSION,
             });
         }
-        let mut session = HarnessSession::new(
-            self.session_id,
-            self.working_directory,
-            self.model,
-        );
+        let mut session = HarnessSession::new(self.session_id, self.working_directory, self.model);
         session.account = self.account;
         session.transcript = self.transcript;
         session.invalidate_backend();
-        Ok(session)
+        Ok((session, self.workflow))
     }
 }
 
@@ -89,8 +101,19 @@ impl CheckpointStore {
         &self.path
     }
 
-    pub fn save_session(&self, session: &HarnessSession) -> Result<HarnessCheckpoint, CheckpointError> {
-        let checkpoint = HarnessCheckpoint::capture(session)?;
+    pub fn save_session(
+        &self,
+        session: &HarnessSession,
+    ) -> Result<HarnessCheckpoint, CheckpointError> {
+        self.save_session_with_workflow(session, None)
+    }
+
+    pub fn save_session_with_workflow(
+        &self,
+        session: &HarnessSession,
+        workflow: Option<&WorkflowProgress>,
+    ) -> Result<HarnessCheckpoint, CheckpointError> {
+        let checkpoint = HarnessCheckpoint::capture_with_workflow(session, workflow)?;
         self.save(&checkpoint)?;
         Ok(checkpoint)
     }
@@ -156,6 +179,12 @@ impl CheckpointStore {
     pub fn restore_session(&self) -> Result<Option<HarnessSession>, CheckpointError> {
         self.load()?.map(HarnessCheckpoint::restore).transpose()
     }
+
+    pub fn restore_bundle(
+        &self,
+    ) -> Result<Option<(HarnessSession, Option<WorkflowProgress>)>, CheckpointError> {
+        self.load()?.map(HarnessCheckpoint::restore_bundle).transpose()
+    }
 }
 
 fn temporary_path(path: &Path) -> PathBuf {
@@ -195,6 +224,7 @@ fn replace_file(temporary: &Path, target: &Path) -> Result<(), CheckpointError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AcceptanceCriterion;
     use crate::ProviderId;
     use tempfile::tempdir;
 
@@ -215,6 +245,13 @@ mod tests {
         session
     }
 
+    fn workflow() -> WorkflowProgress {
+        let mut progress = WorkflowProgress::new("finish parser work");
+        progress.add_criterion(AcceptanceCriterion::pending("tests", "all tests pass"));
+        progress.next_action = Some("run tests".to_string());
+        progress
+    }
+
     #[test]
     fn checkpoint_round_trip_preserves_canonical_state_not_backend_identity() {
         let original = session();
@@ -232,6 +269,22 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_round_trip_preserves_workflow_progress() {
+        let original_session = session();
+        let original_workflow = workflow();
+        let checkpoint = HarnessCheckpoint::capture_with_workflow(
+            &original_session,
+            Some(&original_workflow),
+        )
+        .unwrap();
+        let (restored_session, restored_workflow) = checkpoint.restore_bundle().unwrap();
+
+        assert_eq!(restored_session.transcript, original_session.transcript);
+        assert_eq!(restored_workflow, Some(original_workflow));
+        assert!(restored_session.backend_session.is_none());
+    }
+
+    #[test]
     fn active_turn_checkpoint_is_rejected() {
         let mut active = session();
         active.begin_turn("make a change");
@@ -243,17 +296,21 @@ mod tests {
     }
 
     #[test]
-    fn store_persists_and_restores_checkpoint() {
+    fn store_persists_and_restores_checkpoint_bundle() {
         let directory = tempdir().unwrap();
         let store = CheckpointStore::new(directory.path().join("state/session.json"));
-        let original = session();
+        let original_session = session();
+        let original_workflow = workflow();
 
-        store.save_session(&original).unwrap();
-        let restored = store.restore_session().unwrap().unwrap();
+        store
+            .save_session_with_workflow(&original_session, Some(&original_workflow))
+            .unwrap();
+        let (restored_session, restored_workflow) = store.restore_bundle().unwrap().unwrap();
 
-        assert_eq!(restored.transcript, original.transcript);
-        assert_eq!(restored.account, original.account);
-        assert!(restored.backend_session.is_none());
+        assert_eq!(restored_session.transcript, original_session.transcript);
+        assert_eq!(restored_session.account, original_session.account);
+        assert_eq!(restored_workflow, Some(original_workflow));
+        assert!(restored_session.backend_session.is_none());
     }
 
     #[test]
