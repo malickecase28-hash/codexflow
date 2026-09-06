@@ -10,6 +10,7 @@ use codex_runtime_harness::NativeOpenAiAuthReloader;
 use codex_runtime_harness::NativeOpenAiReloadError;
 use codex_runtime_harness::ProviderId;
 use codex_runtime_harness::ProviderQuotaSnapshot;
+use codex_runtime_harness::RuntimeAutoSwapDecision;
 use codex_runtime_harness::RuntimeHarness;
 use codex_runtime_harness::RuntimeModelId;
 use codex_runtime_harness::RuntimeSelection;
@@ -175,6 +176,10 @@ impl RuntimeBridge {
         provider: ProviderId,
     ) -> Result<ProviderQuotaSnapshot> {
         Ok(self.harness.quota_snapshot(provider).await?)
+    }
+
+    pub(crate) async fn auto_swap_default(&self) -> Result<RuntimeAutoSwapDecision> {
+        Ok(self.harness.auto_swap_current_default().await?)
     }
 
     pub(crate) async fn login_cursor(&self, label_hint: Option<String>) -> Result<RuntimeSelection> {
