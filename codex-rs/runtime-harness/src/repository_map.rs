@@ -196,7 +196,7 @@ fn build_repository_map(files: Vec<OutlineFile>, request: &RepositoryMapRequest)
             break;
         }
         let line = render_entry(&entry);
-        let separator = usize::from(!rendered_lines.is_empty());
+        let separator = if rendered_lines.is_empty() { 0 } else { 1 };
         if used_bytes.saturating_add(separator).saturating_add(line.len()) > request.max_bytes {
             continue;
         }
@@ -315,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn outline_command_is_compact_and_non_source-dumping() {
+    fn outline_command_is_compact_and_non_source_dumping() {
         let args = outline_args(&RepositoryMapRequest::default());
         assert!(args.contains(&"outline".to_string()));
         assert!(args.contains(&"--view=digest".to_string()));
