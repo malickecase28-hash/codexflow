@@ -89,7 +89,6 @@ impl App {
             match selection.provider() {
                 ProviderId::OpenAi => {
                     self.chat_widget.open_model_popup();
-                    self.chat_widget.defer_input_until_settings_applied();
                 }
                 ProviderId::Cursor => {
                     let models = self.runtime_bridge.refresh_cursor_models().await?;
