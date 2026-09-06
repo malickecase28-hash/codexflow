@@ -1,0 +1,64 @@
+name: Runtime harness workspace completion
+
+on:
+  push:
+    branches:
+      - codexflow/runtime-harness-completion
+    paths:
+      - .github/workflows/runtime-harness-workspace-completion.yml
+      - scripts/apply-runtime-harness-workspace-completion.py
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: codexflow/runtime-harness-completion
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-ci
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          components: rustfmt, clippy
+      - name: Apply shipping workspace and TUI bridge integration
+        run: python scripts/apply-runtime-harness-workspace-completion.py
+      - name: Format
+        working-directory: codex-rs
+        run: cargo fmt --all -- --config imports_granularity=Item
+      - name: Test runtime harness
+        working-directory: codex-rs
+        run: cargo test -p codex-runtime-harness
+      - name: Check all TUI targets
+        working-directory: codex-rs
+        run: cargo check -p codex-tui --all-targets
+      - name: Clippy runtime and TUI
+        working-directory: codex-rs
+        run: cargo clippy -p codex-runtime-harness -p codex-tui --all-targets -- -D warnings
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: cargo-shear@1.11.2
+      - name: Cargo shear
+        working-directory: codex-rs
+        run: cargo shear --deny-warnings
+      - name: Commit validated shipping integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/runtime-harness-workspace-completion.yml \
+            scripts/apply-runtime-harness-workspace-completion.py
+          git add \
+            codex-rs/Cargo.toml \
+            codex-rs/Cargo.lock \
+            codex-rs/runtime-harness/Cargo.toml \
+            codex-rs/tui/Cargo.toml \
+            codex-rs/tui/src/lib.rs \
+            codex-rs/tui/src/app.rs \
+            codex-rs/tui/src/app/startup.rs \
+            codex-rs/tui/src/runtime_bridge.rs
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "feat(runtime): wire harness into shipping TUI workspace"
+          git push origin HEAD:codexflow/runtime-harness-completion
