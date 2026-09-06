@@ -30,16 +30,29 @@ jobs:
         run: python scripts/apply-runtime-harness-workspace-completion.py
       - name: Format
         working-directory: codex-rs
-        run: cargo fmt --all -- --config imports_granularity=Item
+        run: just fmt
       - name: Test runtime harness
         working-directory: codex-rs
-        run: cargo test -p codex-runtime-harness
+        run: just test -p codex-runtime-harness
       - name: Check all TUI targets
         working-directory: codex-rs
         run: cargo check -p codex-tui --all-targets
-      - name: Clippy runtime and TUI
+      - name: Fix runtime harness lints
         working-directory: codex-rs
-        run: cargo clippy -p codex-runtime-harness -p codex-tui --all-targets -- -D warnings
+        run: just fix -p codex-runtime-harness
+      - name: Fix TUI lints
+        working-directory: codex-rs
+        run: just fix -p codex-tui
+      - name: Reformat after fixes
+        working-directory: codex-rs
+        run: just fmt
+      - name: Refresh Bazel dependency lock
+        run: just bazel-lock-update
+      - name: Validate dependency policy
+        uses: EmbarkStudios/cargo-deny-action@82eb9f621fbc699dd0918f3ea06864c14cc84246 # v2
+        with:
+          rust-version: 1.95.0
+          manifest-path: ./codex-rs/Cargo.toml
       - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
         with:
           tool: cargo-shear@1.11.2
@@ -52,10 +65,12 @@ jobs:
           set -euo pipefail
           git rm .github/workflows/runtime-harness-workspace-completion.yml \
             scripts/apply-runtime-harness-workspace-completion.py
-          git add \
+          git add -A \
+            MODULE.bazel.lock \
             codex-rs/Cargo.toml \
             codex-rs/Cargo.lock \
-            codex-rs/runtime-harness/Cargo.toml \
+            codex-rs/deny.toml \
+            codex-rs/runtime-harness \
             codex-rs/tui/Cargo.toml \
             codex-rs/tui/src/lib.rs \
             codex-rs/tui/src/app.rs \
