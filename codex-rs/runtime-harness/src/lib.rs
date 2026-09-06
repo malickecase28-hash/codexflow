@@ -16,6 +16,7 @@ pub mod lazy_cursor;
 pub mod model_catalog;
 pub mod native_openai;
 pub mod quota;
+mod quota_runtime;
 pub mod quota_service;
 pub mod router;
 pub mod selection;
