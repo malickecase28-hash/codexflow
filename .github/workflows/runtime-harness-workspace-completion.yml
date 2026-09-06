@@ -10,6 +10,7 @@ on:
       - scripts/apply-runtime-harness-sqlite-compat.py
       - scripts/apply-runtime-harness-live-auth-adapter.py
       - scripts/apply-runtime-harness-command-surface.py
+      - scripts/apply-runtime-harness-autoswap-surface.py
       - codex-rs/runtime-harness/**
       - codex-rs/tui/src/runtime_bridge.rs
       - codex-rs/tui/src/app/runtime_commands.rs
@@ -40,6 +41,8 @@ jobs:
         run: python scripts/apply-runtime-harness-live-auth-adapter.py
       - name: Wire multi-runtime slash command surface
         run: python scripts/apply-runtime-harness-command-surface.py
+      - name: Wire persistent autoswap controls
+        run: python scripts/apply-runtime-harness-autoswap-surface.py
       - name: Format
         working-directory: codex-rs
         run: just fmt
@@ -79,7 +82,8 @@ jobs:
             scripts/apply-runtime-harness-workspace-completion.py \
             scripts/apply-runtime-harness-sqlite-compat.py \
             scripts/apply-runtime-harness-live-auth-adapter.py \
-            scripts/apply-runtime-harness-command-surface.py
+            scripts/apply-runtime-harness-command-surface.py \
+            scripts/apply-runtime-harness-autoswap-surface.py
           git add -A \
             MODULE.bazel.lock \
             codex-rs/Cargo.toml \
