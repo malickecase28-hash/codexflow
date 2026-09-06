@@ -1,6 +1,5 @@
 use crate::ConstraintProviderError;
 use crate::OutputConstraint;
-use crate::OutputConstraintKind;
 use crate::PreparedConstraint;
 use crate::StructuredGenerationCapabilities;
 use crate::StructuredGenerationProvider;
@@ -102,6 +101,7 @@ impl StructuredGenerationProvider for XGrammarOpenAiProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::OutputConstraintKind;
     use serde_json::Value;
 
     fn json_request() -> StructuredGenerationRequest {
