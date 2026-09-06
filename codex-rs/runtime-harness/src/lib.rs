@@ -7,6 +7,7 @@
 
 pub mod accounts;
 pub mod auth;
+pub mod auto_swap;
 pub mod capabilities;
 pub mod controller;
 pub mod cursor_acp;
@@ -15,6 +16,7 @@ pub mod lazy_cursor;
 pub mod model_catalog;
 pub mod native_openai;
 pub mod quota;
+mod quota_runtime;
 pub mod quota_service;
 pub mod router;
 pub mod selection;
@@ -28,6 +30,8 @@ pub use accounts::Activation;
 pub use accounts::ImportedAccount;
 pub use auth::AuthCoordinator;
 pub use auth::AuthCoordinatorError;
+pub use auto_swap::RuntimeAutoSwapDecision;
+pub use auto_swap::RuntimeAutoSwapStatus;
 pub use capabilities::ProviderCapabilities;
 pub use controller::RuntimeHarness;
 pub use controller::RuntimeHarnessError;

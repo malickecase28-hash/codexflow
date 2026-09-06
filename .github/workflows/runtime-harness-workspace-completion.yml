@@ -1,0 +1,108 @@
+name: Runtime harness workspace completion
+
+on:
+  push:
+    branches:
+      - codexflow/runtime-harness-completion
+    paths:
+      - .github/workflows/runtime-harness-workspace-completion.yml
+      - scripts/apply-runtime-harness-workspace-completion.py
+      - scripts/apply-runtime-harness-sqlite-compat.py
+      - scripts/apply-runtime-harness-live-auth-adapter.py
+      - scripts/apply-runtime-harness-command-surface.py
+      - scripts/apply-runtime-harness-autoswap-surface.py
+      - codex-rs/runtime-harness/**
+      - codex-rs/tui/src/runtime_bridge.rs
+      - codex-rs/tui/src/app/runtime_commands.rs
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: codexflow/runtime-harness-completion
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-ci
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          components: rustfmt, clippy
+      - name: Apply pinned Cursor SQLite compatibility
+        run: python scripts/apply-runtime-harness-sqlite-compat.py
+      - name: Apply shipping workspace and TUI bridge integration
+        run: python scripts/apply-runtime-harness-workspace-completion.py
+      - name: Wire exact OpenAI auth reload adapter
+        run: python scripts/apply-runtime-harness-live-auth-adapter.py
+      - name: Wire multi-runtime slash command surface
+        run: python scripts/apply-runtime-harness-command-surface.py
+      - name: Wire persistent autoswap controls
+        run: python scripts/apply-runtime-harness-autoswap-surface.py
+      - name: Format
+        working-directory: codex-rs
+        run: just fmt
+      - name: Test runtime harness
+        working-directory: codex-rs
+        run: just test -p codex-runtime-harness
+      - name: Check all TUI targets
+        working-directory: codex-rs
+        run: cargo check -p codex-tui --all-targets
+      - name: Fix runtime harness lints
+        working-directory: codex-rs
+        run: just fix -p codex-runtime-harness
+      - name: Fix TUI lints
+        working-directory: codex-rs
+        run: just fix -p codex-tui
+      - name: Reformat after fixes
+        working-directory: codex-rs
+        run: just fmt
+      - name: Refresh Bazel dependency lock
+        run: just bazel-lock-update
+      - name: Validate dependency policy
+        uses: EmbarkStudios/cargo-deny-action@82eb9f621fbc699dd0918f3ea06864c14cc84246 # v2
+        with:
+          rust-version: 1.95.0
+          manifest-path: ./codex-rs/Cargo.toml
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: cargo-shear@1.11.2
+      - name: Cargo shear
+        working-directory: codex-rs
+        run: cargo shear --deny-warnings
+      - name: Commit validated shipping integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/runtime-harness-workspace-completion.yml \
+            scripts/apply-runtime-harness-workspace-completion.py \
+            scripts/apply-runtime-harness-sqlite-compat.py \
+            scripts/apply-runtime-harness-live-auth-adapter.py \
+            scripts/apply-runtime-harness-command-surface.py \
+            scripts/apply-runtime-harness-autoswap-surface.py
+          git add -A \
+            MODULE.bazel.lock \
+            codex-rs/Cargo.toml \
+            codex-rs/Cargo.lock \
+            codex-rs/deny.toml \
+            codex-rs/runtime-harness \
+            codex-rs/tui/Cargo.toml \
+            codex-rs/tui/src/lib.rs \
+            codex-rs/tui/src/app.rs \
+            codex-rs/tui/src/app/startup.rs \
+            codex-rs/tui/src/app/runtime_commands.rs \
+            codex-rs/tui/src/app/app_server_events.rs \
+            codex-rs/tui/src/app/event_dispatch.rs \
+            codex-rs/tui/src/app_event.rs \
+            codex-rs/tui/src/chatwidget/slash_dispatch.rs \
+            codex-rs/tui/src/runtime_bridge.rs \
+            codex-rs/tui/src/slash_command.rs \
+            third_party/subswap-provider-cursor-compat
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "feat(runtime): wire shipping multi-runtime control surface"
+          git push origin HEAD:codexflow/runtime-harness-completion
