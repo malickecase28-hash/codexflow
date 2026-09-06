@@ -52,3 +52,11 @@ replace_once(
     f'subswap-provider-cursor = {{ git = "{UPSTREAM}", rev = "{PIN}" }}\n',
     'subswap-provider-cursor = { path = "../../third_party/subswap-provider-cursor-compat" }\n',
 )
+
+deny = Path("codex-rs/deny.toml")
+replace_once(
+    deny,
+    '    "https://github.com/openai-oss-forks/tungstenite-rs",\n',
+    '    "https://github.com/openai-oss-forks/tungstenite-rs",\n'
+    '    "https://github.com/x0c/subswap",\n',
+)
