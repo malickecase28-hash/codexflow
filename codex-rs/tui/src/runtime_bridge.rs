@@ -15,6 +15,7 @@ use codex_runtime_harness::ProviderId;
 use codex_runtime_harness::ProviderQuotaSnapshot;
 use codex_runtime_harness::QuotaUpdateSink;
 use codex_runtime_harness::RuntimeAutoSwapDecision;
+use codex_runtime_harness::RuntimeAutoSwapStatus;
 use codex_runtime_harness::RuntimeHarness;
 use codex_runtime_harness::RuntimeModelId;
 use codex_runtime_harness::RuntimeSelection;
@@ -213,6 +214,14 @@ impl RuntimeBridge {
         provider: ProviderId,
     ) -> Result<ProviderQuotaSnapshot> {
         Ok(self.harness.quota_snapshot(provider).await?)
+    }
+
+    pub(crate) fn auto_swap_status(&self) -> RuntimeAutoSwapStatus {
+        self.harness.auto_swap_status()
+    }
+
+    pub(crate) fn set_auto_swap_enabled(&self, enabled: bool) -> Result<RuntimeAutoSwapStatus> {
+        Ok(self.harness.set_auto_swap_enabled(enabled)?)
     }
 
     pub(crate) async fn auto_swap_default(&self) -> Result<RuntimeAutoSwapDecision> {
