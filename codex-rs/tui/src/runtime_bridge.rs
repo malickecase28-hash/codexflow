@@ -9,6 +9,7 @@ use codex_runtime_harness::NativeOpenAiAuthReloader;
 use codex_runtime_harness::NativeOpenAiReloadError;
 use codex_runtime_harness::ProviderId;
 use codex_runtime_harness::ProviderQuotaSnapshot;
+use codex_runtime_harness::QuotaUpdateSink;
 use codex_runtime_harness::RuntimeAutoSwapDecision;
 use codex_runtime_harness::RuntimeHarness;
 use codex_runtime_harness::RuntimeModelId;
@@ -17,6 +18,8 @@ use color_eyre::eyre::Result;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 const RUNTIME_SELECTION_FILE: &str = "runtime-harness-selection.json";
@@ -75,6 +78,8 @@ impl NativeOpenAiAuthReloader for AppServerOpenAiAuthReloader {
 /// does not launch `agent acp`; the child starts only when a Cursor route is used.
 pub(crate) struct RuntimeBridge {
     harness: Arc<RuntimeHarness>,
+    quota_shutdown: watch::Sender<bool>,
+    quota_tasks: Vec<JoinHandle<()>>,
 }
 
 impl RuntimeBridge {
@@ -95,14 +100,39 @@ impl RuntimeBridge {
         let openai_auth_reloader = Arc::new(AppServerOpenAiAuthReloader::new(
             app_server_request_handle,
         ));
-        let harness = RuntimeHarness::embedded_with_openai_reloader(
+        let harness = Arc::new(RuntimeHarness::embedded_with_openai_reloader(
             default_model,
             selection_path,
             cursor_config,
             openai_auth_reloader,
-        )?;
+        )?);
+
+        let poll_interval = harness.quota_poll_interval();
+        let (quota_shutdown, _) = watch::channel(false);
+        let mut quota_tasks = Vec::with_capacity(2);
+        for provider in [ProviderId::OpenAi, ProviderId::Cursor] {
+            let quota_service = Arc::clone(harness.quota_service());
+            let shutdown = quota_shutdown.subscribe();
+            let sink: Arc<dyn QuotaUpdateSink> =
+                Arc::new(|_snapshot: ProviderQuotaSnapshot| {});
+            quota_tasks.push(tokio::spawn(async move {
+                if let Err(error) = quota_service
+                    .run_provider(provider, poll_interval, shutdown, sink)
+                    .await
+                {
+                    tracing::warn!(
+                        %provider,
+                        error = %error,
+                        "runtime quota poller stopped"
+                    );
+                }
+            }));
+        }
+
         Ok(Self {
-            harness: Arc::new(harness),
+            harness,
+            quota_shutdown,
+            quota_tasks,
         })
     }
 
@@ -182,8 +212,14 @@ impl RuntimeBridge {
         Ok(self.harness.selection().await)
     }
 
-    /// Deterministically terminate any provider-owned child before app-server exits.
-    pub(crate) async fn shutdown(&self) -> Result<()> {
+    /// Stop quota pollers before terminating any provider-owned child process.
+    pub(crate) async fn shutdown(&mut self) -> Result<()> {
+        let _ = self.quota_shutdown.send(true);
+        while let Some(task) = self.quota_tasks.pop() {
+            if let Err(error) = task.await {
+                tracing::warn!(error = %error, "runtime quota poller join failed");
+            }
+        }
         self.harness.shutdown().await?;
         Ok(())
     }
