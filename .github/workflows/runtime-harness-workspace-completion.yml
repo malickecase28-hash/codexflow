@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/runtime-harness-workspace-completion.yml
       - scripts/apply-runtime-harness-workspace-completion.py
+      - scripts/apply-runtime-harness-sqlite-compat.py
   pull_request:
     branches:
       - main
@@ -26,6 +27,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           components: rustfmt, clippy
+      - name: Apply pinned Cursor SQLite compatibility
+        run: python scripts/apply-runtime-harness-sqlite-compat.py
       - name: Apply shipping workspace and TUI bridge integration
         run: python scripts/apply-runtime-harness-workspace-completion.py
       - name: Format
@@ -64,7 +67,8 @@ jobs:
         run: |
           set -euo pipefail
           git rm .github/workflows/runtime-harness-workspace-completion.yml \
-            scripts/apply-runtime-harness-workspace-completion.py
+            scripts/apply-runtime-harness-workspace-completion.py \
+            scripts/apply-runtime-harness-sqlite-compat.py
           git add -A \
             MODULE.bazel.lock \
             codex-rs/Cargo.toml \
@@ -75,7 +79,8 @@ jobs:
             codex-rs/tui/src/lib.rs \
             codex-rs/tui/src/app.rs \
             codex-rs/tui/src/app/startup.rs \
-            codex-rs/tui/src/runtime_bridge.rs
+            codex-rs/tui/src/runtime_bridge.rs \
+            third_party/subswap-provider-cursor-compat
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "feat(runtime): wire harness into shipping TUI workspace"
